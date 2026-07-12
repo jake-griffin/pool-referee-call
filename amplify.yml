@@ -6,6 +6,7 @@ frontend:
         - npm ci
     build:
       commands:
+        - env | grep -E '^(ADMIN_SECRET|DYNAMODB_TABLE_NAME|NEXT_PUBLIC_BASE_URL|APP_AWS_)' >> .env.production
         - npm run build
   artifacts:
     baseDirectory: .next
