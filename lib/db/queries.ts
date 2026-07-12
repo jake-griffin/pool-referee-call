@@ -128,6 +128,17 @@ export type MyCallEntry = {
   createdAt: string;
 };
 
+export type RecentActivityEntry = {
+  callId: string;
+  teamName: string;
+  tableNumber: number;
+  status: string;
+  refereeName: string | null;
+  createdAt: string;
+  acknowledgedAt: string | null;
+  completedAt: string | null;
+};
+
 export type TournamentStateResponse = {
   lastUpdatedAt: string;
   tournament: { name: string; status: TournamentRecord['status']; tableNumbers: number[] };
@@ -137,6 +148,7 @@ export type TournamentStateResponse = {
     { refereeName: string; calls: RefereeQueueEntry[] }
   >;
   myCalls: MyCallEntry[];
+  recentActivity: RecentActivityEntry[];
 };
 
 // ---------------------------------------------------------------------------
@@ -394,8 +406,8 @@ export async function updateCallAcknowledge(
               TableName: TABLE_NAME,
               Key: { PK: pk(tournamentId), SK: callSK(callId) },
               // Atomically transition unanswered → acknowledged.
-              // REMOVE GSI1PK / GSI1SK drops the item from the unanswered index.
-              // SET new GSI1PK / GSI1SK places it in the referee's index.
+              // SET overwrites GSI1PK/GSI1SK from the unanswered partition
+              // to the per-referee partition in a single operation.
               UpdateExpression: `
                 SET #status = :ack,
                     refereeId = :refId,
@@ -403,12 +415,10 @@ export async function updateCallAcknowledge(
                     acknowledgedAt = :ackedAt,
                     GSI1PK = :refGSI1PK,
                     GSI1SK = :ackedAt
-                REMOVE #gsi1pk_old
               `.trim(),
               ConditionExpression: '#status = :unanswered',
               ExpressionAttributeNames: {
                 '#status': 'status',
-                '#gsi1pk_old': 'GSI1PK',
               },
               ExpressionAttributeValues: {
                 ':ack': 'acknowledged',
@@ -681,6 +691,26 @@ export async function getTournamentState(
     elapsedSeconds: elapsedSeconds(c.createdAt, now),
   }));
 
+  // Build recent activity: completed and acknowledged calls, sorted by most recent event
+  const recentActivity: RecentActivityEntry[] = allItems.calls
+    .filter((c) => c.status === 'completed' || c.status === 'acknowledged')
+    .map((c) => ({
+      callId: c.callId,
+      teamName: c.teamName,
+      tableNumber: c.tableNumber,
+      status: c.status,
+      refereeName: c.refereeName,
+      createdAt: c.createdAt,
+      acknowledgedAt: c.acknowledgedAt,
+      completedAt: c.completedAt,
+    }))
+    .sort((a, b) => {
+      const timeA = a.completedAt ?? a.acknowledgedAt ?? a.createdAt;
+      const timeB = b.completedAt ?? b.acknowledgedAt ?? b.createdAt;
+      return timeB.localeCompare(timeA); // most recent first
+    })
+    .slice(0, 20);
+
   return {
     lastUpdatedAt,
     tournament: {
@@ -691,6 +721,7 @@ export async function getTournamentState(
     unansweredQueue,
     refereeQueues,
     myCalls,
+    recentActivity,
   };
 }
 

@@ -90,6 +90,7 @@ export async function POST(
     }
 
     // Generic fallback — never expose raw error details
+    console.error('[acknowledge] Unhandled error:', error);
     return NextResponse.json(
       { message: 'Something went wrong. Please try again.' },
       { status: 500 },

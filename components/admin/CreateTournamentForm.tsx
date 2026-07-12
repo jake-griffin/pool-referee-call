@@ -59,6 +59,12 @@ export default function CreateTournamentForm({ adminSecret }: CreateTournamentFo
 
       const data: CreatedTournament = await response.json();
       setCreated(data);
+
+      // Save tokens to localStorage so the admin dashboard can use them
+      localStorage.setItem(`adminToken_${data.tournamentId}`, data.adminToken);
+      localStorage.setItem(`refereeToken_${data.tournamentId}`, data.refereeToken);
+      localStorage.setItem(`playerToken_${data.tournamentId}`, data.playerToken);
+
       setName('');
       setTableRange('');
     } catch {

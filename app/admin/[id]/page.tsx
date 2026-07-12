@@ -249,7 +249,11 @@ export default function TournamentAdminDashboard() {
         ) : state ? (
           <QueueBoard
             unansweredQueue={state.unansweredQueue ?? []}
-            refereeQueues={state.refereeQueues ?? []}
+            refereeQueues={Object.entries(state.refereeQueues ?? {}).map(([refereeId, queue]) => ({
+              refereeId,
+              refereeName: queue.refereeName,
+              calls: queue.calls,
+            }))}
             recentActivity={(state.recentActivity ?? []).slice(0, 20)}
           />
         ) : (
