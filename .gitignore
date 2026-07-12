@@ -1,2 +1,7 @@
 node_modules
+.next
 .DS_Store
+.env.local
+.env*.local
+tsconfig.tsbuildinfo
+cdk.out

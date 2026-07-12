@@ -27,6 +27,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4.5.2",
+    "aws-cdk-lib": "^2.261.0",
+    "constructs": "^10.6.0",
     "eslint": "^9",
     "eslint-config-next": "^15.3.4",
     "fast-check": "^3.23.2",
