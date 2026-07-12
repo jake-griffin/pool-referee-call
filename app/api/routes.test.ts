@@ -86,6 +86,7 @@ import { POST as completePost } from '@/app/api/calls/[callId]/complete/route';
 import { GET as stateGet } from '@/app/api/tournaments/[id]/state/route';
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 import { GET as archiveGet } from '@/app/api/tournaments/[id]/archive/route';
+import { POST as adminJoinPost } from '@/app/api/tournaments/[id]/join/admin/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -890,5 +891,58 @@ describe('GET /api/tournaments/[id]/archive', () => {
     expect(body.calls).toEqual([]);
     expect(body.referees).toEqual([]);
     expect(body.teams).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// POST /api/tournaments/[id]/join/admin
+// ===========================================================================
+
+describe('POST /api/tournaments/[id]/join/admin', () => {
+  const routeParams = { params: Promise.resolve({ id: 'tournament-1' }) };
+
+  it('returns 401 when adminToken is missing', async () => {
+    const req = createRequest('POST', {});
+    const res = await adminJoinPost(req, routeParams);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 404 when tournament not found', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+    const req = createRequest('POST', { adminToken: 'some-token' });
+    const res = await adminJoinPost(req, routeParams);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 401 when admin token is invalid', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(false);
+    const req = createRequest('POST', { adminToken: 'bad-token' });
+    const res = await adminJoinPost(req, routeParams);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 200 with Set-Cookie header on success', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    vi.mocked(issueSession).mockResolvedValue({
+      sessionId: 'sess-admin',
+      cookieHeader: 'sessionId=sess-admin; HttpOnly; SameSite=Lax; Path=/',
+    });
+
+    const req = createRequest('POST', { adminToken: 'valid-token' });
+    const res = await adminJoinPost(req, routeParams);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.tournamentId).toBe('tournament-1');
+    expect(body.role).toBe('admin');
+    expect(res.headers.get('set-cookie')).toContain('sessionId');
   });
 });

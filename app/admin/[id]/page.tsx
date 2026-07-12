@@ -61,11 +61,17 @@ export default function TournamentAdminDashboard() {
   const [closeError, setCloseError] = useState<string | null>(null);
   const [isClosed, setIsClosed] = useState(false);
 
-  // Load adminToken from localStorage on mount
+  // Load adminToken from localStorage on mount and create session
   useEffect(() => {
     const stored = localStorage.getItem(`adminToken_${tournamentId}`);
     if (stored) {
       setAdminToken(stored);
+      // Ensure we have an admin session cookie for the state endpoint
+      fetch(`/api/tournaments/${tournamentId}/join/admin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminToken: stored }),
+      }).catch(() => {});
     }
   }, [tournamentId]);
 
@@ -91,12 +97,23 @@ export default function TournamentAdminDashboard() {
     enabled: !!adminToken,
   });
 
-  function handleTokenSubmit(e: React.FormEvent) {
+  async function handleTokenSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (tokenInput.trim()) {
       const token = tokenInput.trim();
       setAdminToken(token);
       localStorage.setItem(`adminToken_${tournamentId}`, token);
+
+      // Create an admin session so the state endpoint works
+      try {
+        await fetch(`/api/tournaments/${tournamentId}/join/admin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminToken: token }),
+        });
+      } catch {
+        // Session creation failed — dashboard still works, just no queue board
+      }
     }
   }
 
