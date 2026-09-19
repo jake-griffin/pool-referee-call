@@ -102,6 +102,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       adminTokenHash,
       refereeTokenHash,
       playerTokenHash,
+      // Persist plaintext join tokens so an authenticated admin can re-display
+      // the join QR codes later on any device. Admin token is never stored.
+      refereeToken,
+      playerToken,
       createdAt,
     });
   } catch {

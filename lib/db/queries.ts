@@ -46,6 +46,12 @@ export type TournamentRecord = {
   adminTokenHash: string;
   refereeTokenHash: string;
   playerTokenHash: string;
+  // Plaintext referee/player join tokens. Stored so an authenticated admin can
+  // re-display the join QR codes for an existing tournament on any device.
+  // These gate join access only; the admin token is never stored in plaintext.
+  // Optional for backward compatibility with tournaments created before this field existed.
+  refereeToken?: string;
+  playerToken?: string;
   createdAt: string;
 };
 
@@ -820,6 +826,8 @@ function itemToTournament(item: Record<string, any>): TournamentRecord {
     adminTokenHash: item.adminTokenHash,
     refereeTokenHash: item.refereeTokenHash,
     playerTokenHash: item.playerTokenHash,
+    refereeToken: item.refereeToken ?? undefined,
+    playerToken: item.playerToken ?? undefined,
     createdAt: item.createdAt,
   };
 }

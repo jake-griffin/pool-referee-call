@@ -60,20 +60,42 @@ export default function TournamentAdminDashboard() {
   const [closeConfirm, setCloseConfirm] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [isClosed, setIsClosed] = useState(false);
+  const [serverJoinLinks, setServerJoinLinks] = useState<{ referee: string; player: string } | null>(null);
+
+  // Fetch the referee/player join links from the server (admin session required).
+  // This lets the QR codes render on any device, not just the one that created
+  // the tournament. Returns null if unavailable (e.g. legacy tournament).
+  const fetchJoinLinks = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/tournaments/${tournamentId}/join-links`, {
+        credentials: 'include',
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data?.available && data.joinLinks) {
+        setServerJoinLinks(data.joinLinks);
+      }
+    } catch {
+      // Network error — fall back to localStorage tokens if present.
+    }
+  }, [tournamentId]);
 
   // Load adminToken from localStorage on mount and create session
   useEffect(() => {
     const stored = localStorage.getItem(`adminToken_${tournamentId}`);
     if (stored) {
       setAdminToken(stored);
-      // Ensure we have an admin session cookie for the state endpoint
+      // Ensure we have an admin session cookie for the state endpoint,
+      // then fetch the join links now that the session exists.
       fetch(`/api/tournaments/${tournamentId}/join/admin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminToken: stored }),
-      }).catch(() => {});
+      })
+        .then(() => fetchJoinLinks())
+        .catch(() => {});
     }
-  }, [tournamentId]);
+  }, [tournamentId, fetchJoinLinks]);
 
   const baseUrl = typeof window !== 'undefined'
     ? window.location.origin
@@ -111,6 +133,8 @@ export default function TournamentAdminDashboard() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adminToken: token }),
         });
+        // Session established — fetch join links so QR codes render.
+        await fetchJoinLinks();
       } catch {
         // Session creation failed — dashboard still works, just no queue board
       }
@@ -177,11 +201,22 @@ export default function TournamentAdminDashboard() {
     );
   }
 
-  // Construct join links from token info stored in localStorage
-  const refereeToken = localStorage.getItem(`refereeToken_${tournamentId}`) ?? '';
-  const playerToken = localStorage.getItem(`playerToken_${tournamentId}`) ?? '';
-  const refereeLink = refereeToken ? `${baseUrl}/join/referee/${refereeToken}` : '';
-  const playerLink = playerToken ? `${baseUrl}/join/player/${playerToken}` : '';
+  // Construct join links. Prefer links fetched from the server (they include
+  // the required ?t=<tournamentId> query string and work on any device). Fall
+  // back to tokens saved in localStorage at creation time, appending the same
+  // query string the join pages require.
+  const localRefereeToken = localStorage.getItem(`refereeToken_${tournamentId}`) ?? '';
+  const localPlayerToken = localStorage.getItem(`playerToken_${tournamentId}`) ?? '';
+  const refereeLink =
+    serverJoinLinks?.referee ??
+    (localRefereeToken
+      ? `${baseUrl}/join/referee/${localRefereeToken}?t=${tournamentId}`
+      : '');
+  const playerLink =
+    serverJoinLinks?.player ??
+    (localPlayerToken
+      ? `${baseUrl}/join/player/${localPlayerToken}?t=${tournamentId}`
+      : '');
 
   const tournamentName = state?.tournament?.name ?? 'Tournament';
   const tournamentStatus = isClosed ? 'closed' : (state?.tournament?.status ?? 'unknown');

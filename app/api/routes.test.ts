@@ -87,6 +87,7 @@ import { GET as stateGet } from '@/app/api/tournaments/[id]/state/route';
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 import { GET as archiveGet } from '@/app/api/tournaments/[id]/archive/route';
 import { POST as adminJoinPost } from '@/app/api/tournaments/[id]/join/admin/route';
+import { GET as joinLinksGet } from '@/app/api/tournaments/[id]/join-links/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -944,5 +945,100 @@ describe('POST /api/tournaments/[id]/join/admin', () => {
     expect(body.tournamentId).toBe('tournament-1');
     expect(body.role).toBe('admin');
     expect(res.headers.get('set-cookie')).toContain('sessionId');
+  });
+});
+
+// ===========================================================================
+// GET /api/tournaments/[id]/join-links
+// ===========================================================================
+
+describe('GET /api/tournaments/[id]/join-links', () => {
+  const routeParams = { params: Promise.resolve({ id: 'tournament-1' }) };
+
+  it('returns 401 when session is invalid (requireSession throws)', async () => {
+    vi.mocked(getSession).mockResolvedValue(null);
+    vi.mocked(requireSession).mockImplementation(() => {
+      throw new AuthError('Your session has expired — please rejoin using your link.', 401);
+    });
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 403 when a non-admin session requests links', async () => {
+    const session = makeSession({ role: 'referee' });
+    vi.mocked(getSession).mockResolvedValue(session);
+    vi.mocked(requireSession).mockImplementation(() => {
+      throw new AuthError('Insufficient permissions for this action.', 403);
+    });
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 404 when tournament not found', async () => {
+    vi.mocked(getSession).mockResolvedValue(makeSession({ role: 'admin', entityId: 'admin' }));
+    vi.mocked(requireSession).mockImplementation(() => {});
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 404 with available:false for legacy tournaments lacking stored tokens', async () => {
+    vi.mocked(getSession).mockResolvedValue(makeSession({ role: 'admin', entityId: 'admin' }));
+    vi.mocked(requireSession).mockImplementation(() => {});
+    // makeTournament() has no refereeToken/playerToken (legacy record)
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.available).toBe(false);
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 200 with referee/player join links on success', async () => {
+    vi.mocked(getSession).mockResolvedValue(makeSession({ role: 'admin', entityId: 'admin' }));
+    vi.mocked(requireSession).mockImplementation(() => {});
+    vi.mocked(getTournamentMeta).mockResolvedValue(
+      makeTournament({ refereeToken: 'ref-plain', playerToken: 'player-plain' }),
+    );
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.available).toBe(true);
+    expect(body.joinLinks.referee).toContain('/join/referee/ref-plain');
+    expect(body.joinLinks.referee).toContain('t=tournament-1');
+    expect(body.joinLinks.player).toContain('/join/player/player-plain');
+    expect(body.joinLinks.player).toContain('t=tournament-1');
+  });
+
+  it('never leaks token hashes in the response body', async () => {
+    vi.mocked(getSession).mockResolvedValue(makeSession({ role: 'admin', entityId: 'admin' }));
+    vi.mocked(requireSession).mockImplementation(() => {});
+    vi.mocked(getTournamentMeta).mockResolvedValue(
+      makeTournament({ refereeToken: 'ref-plain', playerToken: 'player-plain' }),
+    );
+
+    const req = createRequest('GET');
+    const res = await joinLinksGet(req, routeParams);
+    const body = await res.json();
+    const bodyStr = JSON.stringify(body);
+    expect(bodyStr).not.toContain('TokenHash');
+    expect(bodyStr).not.toContain('sha256:');
   });
 });

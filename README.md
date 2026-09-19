@@ -47,6 +47,12 @@ Create a `.env.local` file (or configure in Amplify console) with the following:
 | `AWS_ACCESS_KEY_ID` | IAM access key with DynamoDB permissions |
 | `AWS_SECRET_ACCESS_KEY` | IAM secret access key |
 
+### Token storage and security
+
+- The **admin token** is stored only as a SHA-256 hash and is never persisted or returned in plaintext after creation. Save it when the tournament is created.
+- The **referee and player join tokens** are stored in plaintext on the tournament record so an authenticated admin can re-display the join QR codes for an existing tournament from any device (via `GET /api/tournaments/[id]/join-links`, which requires an admin session). These tokens only gate joining a tournament as a referee or player; they carry no admin privileges.
+- Tournaments created before this behavior was added will not have stored join tokens, so their QR codes cannot be recovered — recreate the tournament or share the original links saved at creation time.
+
 ## DynamoDB Table Provisioning
 
 The app requires a single DynamoDB table. You can create it using either method:
