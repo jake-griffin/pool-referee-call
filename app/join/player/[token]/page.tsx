@@ -77,7 +77,7 @@ export default function PlayerJoinPage() {
             htmlFor="team-name"
             className="block text-sm font-medium text-gray-700 mb-1"
           >
-            Team Name
+            Player or Team Name
           </label>
           <input
             id="team-name"
@@ -87,7 +87,7 @@ export default function PlayerJoinPage() {
             required
             autoComplete="organization"
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            placeholder="Enter your team name"
+            placeholder="Enter your player or team name"
           />
         </div>
 
