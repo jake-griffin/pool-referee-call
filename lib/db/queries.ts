@@ -351,6 +351,53 @@ export async function closeTournament(tournamentId: string): Promise<void> {
 }
 
 /**
+ * Assign (or clear) a tournament's owning director.
+ *
+ * Passing an ownerId sets `ownerId` and writes the GSI1 owner-index keys
+ * (OWNER#{ownerId} / createdAt) so the tournament appears in that director's
+ * list. Passing null un-assigns: it removes `ownerId` and the GSI1 keys,
+ * returning the tournament to admin-only visibility.
+ *
+ * Works for any tournament, including ones created before director accounts
+ * existed (an ownerless tournament simply has no ownerId to begin with).
+ */
+export async function assignTournamentOwner(
+  tournamentId: string,
+  ownerId: string | null,
+): Promise<void> {
+  const client = getDocumentClient();
+
+  if (ownerId) {
+    // Need the tournament's createdAt for the GSI1 sort key (matches putTournament).
+    const meta = await getTournamentMeta(tournamentId);
+    if (!meta) throw new Error(`Tournament ${tournamentId} not found`);
+    await client.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { PK: pk(tournamentId), SK: metaSK() },
+        UpdateExpression: 'SET ownerId = :owner, GSI1PK = :gpk, GSI1SK = :gsk',
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeValues: {
+          ':owner': ownerId,
+          ':gpk': ownerGSI1PK(ownerId),
+          ':gsk': meta.createdAt,
+        },
+      }),
+    );
+  } else {
+    // Un-assign: drop ownership and the owner-index keys.
+    await client.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { PK: pk(tournamentId), SK: metaSK() },
+        UpdateExpression: 'REMOVE ownerId, GSI1PK, GSI1SK',
+        ConditionExpression: 'attribute_exists(PK)',
+      }),
+    );
+  }
+}
+
+/**
  * Replace a tournament's tableNumbers with a new sorted, deduplicated list.
  * Used by the admin "manage tables" feature to add or remove tables while a
  * tournament is in progress. The caller is responsible for validating and

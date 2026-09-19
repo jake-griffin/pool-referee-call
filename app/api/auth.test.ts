@@ -38,6 +38,7 @@ vi.mock('@/lib/db/queries', () => {
     getTournamentMeta: vi.fn(),
     closeTournament: vi.fn(),
     deleteGlobalSession: vi.fn(),
+    assignTournamentOwner: vi.fn(),
   };
 });
 
@@ -87,6 +88,7 @@ import {
   listTournamentsByOwner,
   getTournamentMeta,
   closeTournament,
+  assignTournamentOwner,
   DuplicateEmailError,
 } from '@/lib/db/queries';
 import { verifyPassword } from '@/lib/auth/password';
@@ -99,6 +101,7 @@ import { POST as loginPost } from '@/app/api/auth/login/route';
 import { POST as logoutPost } from '@/app/api/auth/logout/route';
 import { POST as createTournamentPost, GET as listTournamentsGet } from '@/app/api/admin/tournaments/route';
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
+import { PATCH as ownerPatch } from '@/app/api/tournaments/[id]/owner/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -457,5 +460,65 @@ describe('PATCH /api/directors/[id] (enable/disable)', () => {
     const res = await directorPatch(req('PATCH', { disabled: true }), routeParams);
     expect(res.status).toBe(200);
     expect(setDirectorDisabled).toHaveBeenCalledWith('d_1', true);
+  });
+});
+
+// ===========================================================================
+// PATCH /api/tournaments/[id]/owner — admin assigns/un-assigns a director
+// ===========================================================================
+
+describe('PATCH /api/tournaments/[id]/owner', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1' }) };
+
+  it('returns 401 without admin auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    const res = await ownerPatch(req('PATCH', { directorId: 'd_1' }), routeParams);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 for an invalid directorId value', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    const res = await ownerPatch(req('PATCH', { directorId: '' }), routeParams);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when the tournament does not exist', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+    const res = await ownerPatch(req('PATCH', { directorId: 'd_1' }), routeParams);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when assigning to a non-existent director', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(getDirectorById).mockResolvedValue(null);
+    const res = await ownerPatch(req('PATCH', { directorId: 'd_missing' }), routeParams);
+    expect(res.status).toBe(404);
+  });
+
+  it('assigns an ownerless tournament to a director', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: undefined }));
+    vi.mocked(getDirectorById).mockResolvedValue(makeDirector({ directorId: 'd_1' }));
+    vi.mocked(assignTournamentOwner).mockResolvedValue(undefined);
+
+    const res = await ownerPatch(req('PATCH', { directorId: 'd_1' }), routeParams);
+    expect(res.status).toBe(200);
+    expect(assignTournamentOwner).toHaveBeenCalledWith('t_1', 'd_1');
+    const body = await res.json();
+    expect(body.ownerId).toBe('d_1');
+  });
+
+  it('un-assigns a tournament when directorId is null', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(assignTournamentOwner).mockResolvedValue(undefined);
+
+    const res = await ownerPatch(req('PATCH', { directorId: null }), routeParams);
+    expect(res.status).toBe(200);
+    expect(assignTournamentOwner).toHaveBeenCalledWith('t_1', null);
+    // getDirectorById should not be consulted when un-assigning.
+    expect(getDirectorById).not.toHaveBeenCalled();
   });
 });
