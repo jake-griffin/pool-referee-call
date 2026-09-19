@@ -145,6 +145,12 @@ export type RecentActivityEntry = {
   completedAt: string | null;
 };
 
+export type ParticipantEntry = {
+  id: string;
+  name: string;
+  joinedAt: string;
+};
+
 export type TournamentStateResponse = {
   lastUpdatedAt: string;
   tournament: { name: string; status: TournamentRecord['status']; tableNumbers: number[] };
@@ -155,6 +161,14 @@ export type TournamentStateResponse = {
   >;
   myCalls: MyCallEntry[];
   recentActivity: RecentActivityEntry[];
+  /**
+   * Roster of who has joined the tournament. Only populated for admin sessions
+   * (undefined for player/referee sessions to avoid exposing the full roster).
+   */
+  participants?: {
+    referees: ParticipantEntry[];
+    teams: ParticipantEntry[];
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -738,6 +752,22 @@ export async function getTournamentState(
     })
     .slice(0, 20);
 
+  // Participants roster — admin only. Players/referees don't need (and
+  // shouldn't see) the full list of who has joined.
+  let participants: TournamentStateResponse['participants'];
+  if (session.role === 'admin') {
+    const byJoinedAt = (a: ParticipantEntry, b: ParticipantEntry) =>
+      a.joinedAt.localeCompare(b.joinedAt);
+    participants = {
+      referees: allItems.referees
+        .map((r) => ({ id: r.refereeId, name: r.name, joinedAt: r.joinedAt }))
+        .sort(byJoinedAt),
+      teams: allItems.teams
+        .map((t) => ({ id: t.teamId, name: t.name, joinedAt: t.joinedAt }))
+        .sort(byJoinedAt),
+    };
+  }
+
   return {
     lastUpdatedAt,
     tournament: {
@@ -749,6 +779,7 @@ export async function getTournamentState(
     refereeQueues,
     myCalls,
     recentActivity,
+    participants,
   };
 }
 

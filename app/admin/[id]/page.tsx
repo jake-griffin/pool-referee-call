@@ -7,6 +7,7 @@ import { extractUserMessage } from '@/lib/utils/errors';
 import JoinLinks from '@/components/admin/JoinLinks';
 import QueueBoard from '@/components/admin/QueueBoard';
 import ManageTables from '@/components/admin/ManageTables';
+import ParticipantsList from '@/components/admin/ParticipantsList';
 
 interface TournamentState {
   tournament: {
@@ -49,6 +50,10 @@ interface TournamentState {
     acknowledgedAt?: string;
     completedAt?: string;
   }>;
+  participants?: {
+    referees: Array<{ id: string; name: string; joinedAt: string }>;
+    teams: Array<{ id: string; name: string; joinedAt: string }>;
+  };
 }
 
 export default function TournamentAdminDashboard() {
@@ -303,6 +308,16 @@ export default function TournamentAdminDashboard() {
             adminToken={adminToken}
             tableNumbers={state.tournament.tableNumbers ?? []}
             onUpdated={() => { refetch(); }}
+          />
+        </section>
+      )}
+
+      {/* Participants */}
+      {state?.participants && (
+        <section className="mb-8">
+          <ParticipantsList
+            referees={state.participants.referees ?? []}
+            teams={state.participants.teams ?? []}
           />
         </section>
       )}
