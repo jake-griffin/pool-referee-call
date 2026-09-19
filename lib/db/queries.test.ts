@@ -32,6 +32,7 @@ import {
   getTournamentMeta,
   updateCallAcknowledge,
   getTournamentState,
+  listTournaments,
   AlreadyClaimedError,
 } from '@/lib/db/queries';
 import type { SessionPayload } from '@/lib/auth/session';
@@ -573,5 +574,56 @@ describe('getTournamentState', () => {
       status: 'acknowledged',
       position: 1,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listTournaments — must exclude non-tournament META records
+// ---------------------------------------------------------------------------
+
+describe('listTournaments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('scopes the scan to tournament partitions (PK begins_with "T#")', async () => {
+    const mockSend = createMockClient();
+    mockSend.mockResolvedValueOnce({ Items: [] });
+
+    await listTournaments();
+
+    // The scan must filter on both SK = META and a T# PK prefix, otherwise
+    // director (DIRECTOR#) and global session (GSESSION#) records — which also
+    // use SK = "META" — leak into the tournament list as blank rows.
+    const sentCommand = mockSend.mock.calls[0][0];
+    const filter = sentCommand.input.FilterExpression as string;
+    expect(filter).toContain('SK = :meta');
+    expect(filter).toContain('begins_with(PK, :tpref)');
+    expect(sentCommand.input.ExpressionAttributeValues[':tpref']).toBe('T#');
+  });
+
+  it('maps returned tournament items to typed records', async () => {
+    const mockSend = createMockClient();
+    mockSend.mockResolvedValueOnce({
+      Items: [
+        {
+          PK: 'T#t_1',
+          SK: 'META',
+          tournamentId: 't_1',
+          name: 'Cup',
+          status: 'active',
+          tableNumbers: [1, 2],
+          adminTokenHash: 'sha256:a',
+          refereeTokenHash: 'sha256:b',
+          playerTokenHash: 'sha256:c',
+          createdAt: '2025-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const result = await listTournaments();
+    expect(result).toHaveLength(1);
+    expect(result[0].tournamentId).toBe('t_1');
+    expect(result[0].name).toBe('Cup');
   });
 });

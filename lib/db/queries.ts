@@ -318,13 +318,16 @@ export async function listTournamentsByOwner(
  */
 export async function listTournaments(): Promise<TournamentRecord[]> {
   const client = getDocumentClient();
-  // Scan with filter for SK = "META". In production consider a dedicated GSI;
-  // for typical tournament volumes (~hundreds) a scan is acceptable.
+  // Scan for tournament META records only. NOTE: SK = "META" alone is NOT
+  // sufficient — director accounts (PK=DIRECTOR#) and global sessions
+  // (PK=GSESSION#) also use SK="META". We must additionally scope to the
+  // tournament partition (PK begins with "T#") or those records leak into the
+  // list as blank/invalid rows.
   const { Items = [] } = await client.send(
     new ScanCommand({
       TableName: TABLE_NAME,
-      FilterExpression: 'SK = :meta',
-      ExpressionAttributeValues: { ':meta': 'META' },
+      FilterExpression: 'SK = :meta AND begins_with(PK, :tpref)',
+      ExpressionAttributeValues: { ':meta': 'META', ':tpref': 'T#' },
     }),
   );
   return Items.map(itemToTournament);

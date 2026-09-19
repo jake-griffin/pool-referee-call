@@ -62,10 +62,11 @@ export default function CreateTournamentForm({ onCreated }: CreateTournamentForm
       setCreated(data);
       onCreated?.();
 
-      // Save tokens to localStorage so the admin dashboard can use them
+      // Save the admin token to localStorage as a fallback for managing this
+      // tournament without a signed-in session (legacy access path). The
+      // referee/player tokens don't need saving — they're always recoverable
+      // via the join links / QR codes shown on the dashboard.
       localStorage.setItem(`adminToken_${data.tournamentId}`, data.adminToken);
-      localStorage.setItem(`refereeToken_${data.tournamentId}`, data.refereeToken);
-      localStorage.setItem(`playerToken_${data.tournamentId}`, data.playerToken);
 
       setName('');
       setTableRange('');
@@ -88,22 +89,20 @@ export default function CreateTournamentForm({ onCreated }: CreateTournamentForm
           </p>
         </div>
 
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <p className="text-sm font-medium text-amber-800">
-            ⚠️ Save these tokens now — they cannot be retrieved again.
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+          <p className="text-sm font-medium text-gray-800">
+            Admin token (optional backup)
           </p>
-          <dl className="mt-3 space-y-2 text-sm">
+          <p className="mt-1 text-xs text-gray-600">
+            You manage this tournament from your account — you don&apos;t need this
+            token. Save it only if you want to grant someone one-off management
+            access to this tournament without a sign-in. It cannot be retrieved
+            again later.
+          </p>
+          <dl className="mt-3 text-sm">
             <div>
-              <dt className="font-medium text-gray-700">Admin Token</dt>
+              <dt className="sr-only">Admin Token</dt>
               <dd className="font-mono text-xs break-all text-gray-900">{created.adminToken}</dd>
-            </div>
-            <div>
-              <dt className="font-medium text-gray-700">Referee Token</dt>
-              <dd className="font-mono text-xs break-all text-gray-900">{created.refereeToken}</dd>
-            </div>
-            <div>
-              <dt className="font-medium text-gray-700">Player Token</dt>
-              <dd className="font-mono text-xs break-all text-gray-900">{created.playerToken}</dd>
             </div>
           </dl>
         </div>
