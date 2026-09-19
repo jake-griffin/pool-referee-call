@@ -6,6 +6,7 @@ import { usePolling } from '@/lib/hooks/usePolling';
 import { extractUserMessage } from '@/lib/utils/errors';
 import JoinLinks from '@/components/admin/JoinLinks';
 import QueueBoard from '@/components/admin/QueueBoard';
+import ManageTables from '@/components/admin/ManageTables';
 
 interface TournamentState {
   tournament: {
@@ -113,7 +114,7 @@ export default function TournamentAdminDashboard() {
     return response.json();
   }, [tournamentId]);
 
-  const { data: state, isLoading, showConnectionBanner } = usePolling<TournamentState | null>({
+  const { data: state, isLoading, showConnectionBanner, refetch } = usePolling<TournamentState | null>({
     fetchFn: fetchState,
     intervalMs: 4000,
     enabled: !!adminToken,
@@ -290,6 +291,18 @@ export default function TournamentAdminDashboard() {
           <JoinLinks
             refereeLink={refereeLink || `${baseUrl}/join/referee/[token not available]`}
             playerLink={playerLink || `${baseUrl}/join/player/[token not available]`}
+          />
+        </section>
+      )}
+
+      {/* Manage Tables */}
+      {tournamentStatus === 'active' && adminToken && state?.tournament && (
+        <section className="mb-8">
+          <ManageTables
+            tournamentId={tournamentId}
+            adminToken={adminToken}
+            tableNumbers={state.tournament.tableNumbers ?? []}
+            onUpdated={() => { refetch(); }}
           />
         </section>
       )}

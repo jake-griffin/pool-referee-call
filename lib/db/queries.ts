@@ -248,6 +248,27 @@ export async function closeTournament(tournamentId: string): Promise<void> {
   );
 }
 
+/**
+ * Replace a tournament's tableNumbers with a new sorted, deduplicated list.
+ * Used by the admin "manage tables" feature to add or remove tables while a
+ * tournament is in progress. The caller is responsible for validating and
+ * normalising the list (sorted, unique, positive integers).
+ */
+export async function updateTableNumbers(
+  tournamentId: string,
+  tableNumbers: number[],
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: pk(tournamentId), SK: metaSK() },
+      UpdateExpression: 'SET tableNumbers = :tables',
+      ExpressionAttributeValues: { ':tables': tableNumbers },
+    }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------

@@ -24,6 +24,8 @@ vi.mock('@/lib/db/queries', () => ({
   getTournamentState: vi.fn(),
   closeTournament: vi.fn(),
   queryAllTournamentItems: vi.fn(),
+  updateTableNumbers: vi.fn(),
+  queryUnansweredQueue: vi.fn(),
 }));
 
 vi.mock('@/lib/auth/tokens', () => ({
@@ -61,6 +63,8 @@ import {
   getTournamentState,
   closeTournament,
   queryAllTournamentItems,
+  updateTableNumbers,
+  queryUnansweredQueue,
 } from '@/lib/db/queries';
 
 import { generateToken, hashToken, verifyToken } from '@/lib/auth/tokens';
@@ -88,6 +92,7 @@ import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 import { GET as archiveGet } from '@/app/api/tournaments/[id]/archive/route';
 import { POST as adminJoinPost } from '@/app/api/tournaments/[id]/join/admin/route';
 import { GET as joinLinksGet } from '@/app/api/tournaments/[id]/join-links/route';
+import { PUT as tablesPut } from '@/app/api/tournaments/[id]/tables/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1040,5 +1045,163 @@ describe('GET /api/tournaments/[id]/join-links', () => {
     const bodyStr = JSON.stringify(body);
     expect(bodyStr).not.toContain('TokenHash');
     expect(bodyStr).not.toContain('sha256:');
+  });
+});
+
+// ===========================================================================
+// PUT /api/tournaments/[id]/tables
+// ===========================================================================
+
+describe('PUT /api/tournaments/[id]/tables', () => {
+  const routeParams = { params: Promise.resolve({ id: 'tournament-1' }) };
+
+  it('returns 401 when adminToken is missing', async () => {
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3] });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 404 when tournament not found', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3] }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 401 when admin token is invalid', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(false);
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3] }, {
+      authorization: 'Bearer bad-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 400 when neither tableNumbers nor tableRange is provided', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    const req = createRequest('PUT', { somethingElse: true }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 400 when tableNumbers contains a non-positive integer', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    const req = createRequest('PUT', { tableNumbers: [1, 0, 3] }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 400 when the resulting table list is empty', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    const req = createRequest('PUT', { tableNumbers: [] }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 200 and adds tables (no removals => affectedActiveCalls 0)', async () => {
+    // Tournament has tables [1,2,3,4,5]; we set a superset so nothing is removed.
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    vi.mocked(updateTableNumbers).mockResolvedValue(undefined);
+
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3, 4, 5, 6, 7] }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.tableNumbers).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(body.removedTables).toEqual([]);
+    expect(body.affectedActiveCalls).toBe(0);
+    expect(updateTableNumbers).toHaveBeenCalledWith('tournament-1', [1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('accepts tableRange strings and normalizes them', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    vi.mocked(updateTableNumbers).mockResolvedValue(undefined);
+
+    const req = createRequest('PUT', { tableRange: '1-5, 8' }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.tableNumbers).toEqual([1, 2, 3, 4, 5, 8]);
+  });
+
+  it('reports affected active calls when removing a table that has active calls', async () => {
+    // Tournament has [1,2,3,4,5]; remove table 5 which has an active call.
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    vi.mocked(updateTableNumbers).mockResolvedValue(undefined);
+    vi.mocked(queryUnansweredQueue).mockResolvedValue([
+      {
+        callId: 'call-on-5',
+        tournamentId: 'tournament-1',
+        teamId: 'team-1',
+        teamName: 'Cool Team',
+        tableNumber: 5,
+        status: 'unanswered',
+        refereeId: null,
+        refereeName: null,
+        createdAt: '2025-01-01T10:00:00.000Z',
+        acknowledgedAt: null,
+        completedAt: null,
+      },
+    ]);
+    vi.mocked(queryAllTournamentItems).mockResolvedValue({
+      tournament: makeTournament(),
+      calls: [],
+      referees: [],
+      teams: [],
+      sessions: [],
+    });
+
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3, 4] }, {
+      authorization: 'Bearer admin-token',
+    });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.removedTables).toEqual([5]);
+    expect(body.affectedActiveCalls).toBe(1);
+  });
+
+  it('supports admin token supplied in the body', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(verifyToken).mockReturnValue(true);
+    vi.mocked(updateTableNumbers).mockResolvedValue(undefined);
+
+    const req = createRequest('PUT', { tableNumbers: [1, 2, 3], adminToken: 'admin-token' });
+    const res = await tablesPut(req, routeParams);
+    expect(res.status).toBe(200);
   });
 });
