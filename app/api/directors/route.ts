@@ -5,26 +5,33 @@
  * admin, authenticated either via the ADMIN_SECRET Bearer header or an admin
  * global session cookie.
  *
+ * GET — List all director accounts (admin only). Never returns password hashes.
+ *
  * Directors own the tournaments they create. Their password is hashed with
  * scrypt and never returned.
  */
 
 import { NextResponse } from 'next/server';
 import { generateToken } from '@/lib/auth/tokens';
-import { hashPassword } from '@/lib/auth/password';
+import { hashPassword, constantTimeEqual } from '@/lib/auth/password';
 import { getGlobalSession } from '@/lib/auth/session';
-import { putDirector, getDirectorByEmail } from '@/lib/db/queries';
+import {
+  putDirector,
+  getDirectorByEmail,
+  listDirectors,
+  DuplicateEmailError,
+} from '@/lib/db/queries';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
 
 async function isAdmin(request: Request): Promise<boolean> {
-  // ADMIN_SECRET bearer header
+  // ADMIN_SECRET bearer header (constant-time comparison)
   const authHeader = request.headers.get('authorization');
   const adminSecret = process.env.ADMIN_SECRET;
   if (authHeader && adminSecret) {
     const parts = authHeader.split(' ');
-    if (parts.length === 2 && parts[0] === 'Bearer' && parts[1] === adminSecret) {
+    if (parts.length === 2 && parts[0] === 'Bearer' && constantTimeEqual(parts[1], adminSecret)) {
       return true;
     }
   }
@@ -79,13 +86,58 @@ export async function POST(request: Request): Promise<NextResponse> {
     const passwordHash = await hashPassword(password);
     const createdAt = new Date().toISOString();
 
-    await putDirector({ directorId, email, name, passwordHash, createdAt });
+    try {
+      await putDirector({ directorId, email, name, passwordHash, createdAt });
+    } catch (err) {
+      // Atomic uniqueness check lost the race (or the email already existed).
+      if (err instanceof DuplicateEmailError) {
+        return NextResponse.json(
+          { message: 'A director with that email already exists.' },
+          { status: 409 },
+        );
+      }
+      throw err;
+    }
 
     // Never return the password hash.
     return NextResponse.json(
       { directorId, email, name, createdAt },
       { status: 201 },
     );
+  } catch {
+    return NextResponse.json(
+      { message: 'Something went wrong. Please try again.' },
+      { status: 500 },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/directors — list director accounts (admin only)
+// ---------------------------------------------------------------------------
+
+export async function GET(request: Request): Promise<NextResponse> {
+  try {
+    if (!(await isAdmin(request))) {
+      return NextResponse.json(
+        { message: 'Unauthorized. Admin access is required.' },
+        { status: 401 },
+      );
+    }
+
+    const directors = await listDirectors();
+    // Never expose password hashes.
+    const summaries = directors
+      .map((d) => ({
+        directorId: d.directorId,
+        email: d.email,
+        name: d.name,
+        createdAt: d.createdAt,
+        disabled: !!d.disabled,
+      }))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    return NextResponse.json(summaries, { status: 200 });
   } catch {
     return NextResponse.json(
       { message: 'Something went wrong. Please try again.' },

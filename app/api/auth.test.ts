@@ -16,20 +16,36 @@ import type { GlobalSessionPayload } from '@/lib/auth/session';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('@/lib/db/queries', () => ({
-  putDirector: vi.fn(),
-  getDirectorByEmail: vi.fn(),
-  getDirectorById: vi.fn(),
-  putTournament: vi.fn(),
-  listTournaments: vi.fn(),
-  listTournamentsByOwner: vi.fn(),
-  getTournamentMeta: vi.fn(),
-  closeTournament: vi.fn(),
-}));
+vi.mock('@/lib/db/queries', () => {
+  // Defined inside the factory because vi.mock is hoisted above module scope.
+  class DuplicateEmailError extends Error {
+    readonly code = 'DUPLICATE_EMAIL' as const;
+    constructor() {
+      super('A director with that email already exists.');
+      this.name = 'DuplicateEmailError';
+    }
+  }
+  return {
+    DuplicateEmailError,
+    putDirector: vi.fn(),
+    getDirectorByEmail: vi.fn(),
+    getDirectorById: vi.fn(),
+    listDirectors: vi.fn(),
+    setDirectorDisabled: vi.fn(),
+    putTournament: vi.fn(),
+    listTournaments: vi.fn(),
+    listTournamentsByOwner: vi.fn(),
+    getTournamentMeta: vi.fn(),
+    closeTournament: vi.fn(),
+    deleteGlobalSession: vi.fn(),
+  };
+});
 
 vi.mock('@/lib/auth/password', () => ({
   hashPassword: vi.fn(async (p: string) => `scrypt:mock:${p}`),
   verifyPassword: vi.fn(async () => true),
+  getDummyPasswordHash: vi.fn(async () => 'scrypt:mock:dummy'),
+  constantTimeEqual: vi.fn((a: string, b: string) => a === b),
 }));
 
 vi.mock('@/lib/auth/tokens', async (importOriginal) => {
@@ -52,6 +68,7 @@ vi.mock('@/lib/auth/session', async (importOriginal) => {
       cookieHeader: 'gsession=gsess-1; HttpOnly; SameSite=Lax; Path=/',
     })),
     clearGlobalSessionCookie: vi.fn(() => 'gsession=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT'),
+    revokeGlobalSession: vi.fn(async () => {}),
   };
 });
 
@@ -62,18 +79,24 @@ vi.mock('@/lib/auth/session', async (importOriginal) => {
 import {
   putDirector,
   getDirectorByEmail,
+  getDirectorById,
+  listDirectors,
+  setDirectorDisabled,
   putTournament,
   listTournaments,
   listTournamentsByOwner,
   getTournamentMeta,
   closeTournament,
+  DuplicateEmailError,
 } from '@/lib/db/queries';
 import { verifyPassword } from '@/lib/auth/password';
 import { verifyToken } from '@/lib/auth/tokens';
-import { getGlobalSession, issueGlobalSession } from '@/lib/auth/session';
+import { getGlobalSession, issueGlobalSession, revokeGlobalSession } from '@/lib/auth/session';
 
-import { POST as directorsPost } from '@/app/api/directors/route';
+import { POST as directorsPost, GET as directorsGet } from '@/app/api/directors/route';
+import { PATCH as directorPatch } from '@/app/api/directors/[id]/route';
 import { POST as loginPost } from '@/app/api/auth/login/route';
+import { POST as logoutPost } from '@/app/api/auth/logout/route';
 import { POST as createTournamentPost, GET as listTournamentsGet } from '@/app/api/admin/tournaments/route';
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 
@@ -338,5 +361,101 @@ describe('close route ownership gating', () => {
 
     const res = await closePost(req('POST'), { params: Promise.resolve({ id: 't_1' }) });
     expect(res.status).toBe(401);
+  });
+});
+
+// ===========================================================================
+// Review-fix coverage: uniqueness race, disabled accounts, logout revocation,
+// director list/disable
+// ===========================================================================
+
+describe('director creation email-uniqueness race', () => {
+  it('returns 409 when the transactional write reports a duplicate', async () => {
+    // Pre-check passes (no existing), but the atomic write loses the race.
+    vi.mocked(getDirectorByEmail).mockResolvedValue(null);
+    vi.mocked(putDirector).mockRejectedValue(new DuplicateEmailError());
+
+    const res = await directorsPost(
+      req('POST', { name: 'Dana', email: 'dana@example.com', password: 'password123' }, {
+        authorization: `Bearer ${ADMIN_SECRET}`,
+      }),
+    );
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('login rejects disabled accounts', () => {
+  it('returns 403 for a disabled director with valid credentials', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(makeDirector({ disabled: true }));
+    vi.mocked(verifyPassword).mockResolvedValue(true);
+
+    const res = await loginPost(req('POST', { email: 'dana@example.com', password: 'password123' }));
+    expect(res.status).toBe(403);
+    expect(issueGlobalSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/auth/logout', () => {
+  it('revokes the session server-side and clears the cookie', async () => {
+    const res = await logoutPost(req('POST', undefined, { cookie: 'gsession=abc' }));
+    expect(res.status).toBe(200);
+    expect(revokeGlobalSession).toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toContain('gsession=;');
+  });
+});
+
+describe('GET /api/directors (list)', () => {
+  it('returns 401 without admin auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    const res = await directorsGet(req('GET'));
+    expect(res.status).toBe(401);
+  });
+
+  it('returns director summaries without password hashes for the admin', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(listDirectors).mockResolvedValue([
+      makeDirector({ directorId: 'd_1', email: 'a@x.com', name: 'A' }),
+      makeDirector({ directorId: 'd_2', email: 'b@x.com', name: 'B', disabled: true }),
+    ]);
+
+    const res = await directorsGet(req('GET'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(2);
+    expect(JSON.stringify(body)).not.toContain('scrypt:');
+    expect(JSON.stringify(body)).not.toContain('passwordHash');
+  });
+});
+
+describe('PATCH /api/directors/[id] (enable/disable)', () => {
+  const routeParams = { params: Promise.resolve({ id: 'd_1' }) };
+
+  it('returns 401 without admin auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    const res = await directorPatch(req('PATCH', { disabled: true }), routeParams);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 when disabled is not a boolean', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    const res = await directorPatch(req('PATCH', { disabled: 'yes' }), routeParams);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when the director does not exist', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getDirectorById).mockResolvedValue(null);
+    const res = await directorPatch(req('PATCH', { disabled: true }), routeParams);
+    expect(res.status).toBe(404);
+  });
+
+  it('disables an existing director for the admin', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getDirectorById).mockResolvedValue(makeDirector({ directorId: 'd_1' }));
+    vi.mocked(setDirectorDisabled).mockResolvedValue(undefined);
+
+    const res = await directorPatch(req('PATCH', { disabled: true }), routeParams);
+    expect(res.status).toBe(200);
+    expect(setDirectorDisabled).toHaveBeenCalledWith('d_1', true);
   });
 });

@@ -65,6 +65,11 @@ Ownership notes:
 - Tournaments created by a director are stamped with that director as owner. Tournaments created via the legacy `ADMIN_SECRET` path (or before this feature existed) have no owner and are visible to the admin only.
 - The legacy per-tournament admin token still works for managing a specific tournament, so existing links and bookmarks keep functioning.
 
+Account and session management:
+
+- The admin can disable (or re-enable) a director from `/admin/directors`. A disabled director cannot sign in. Signing out revokes the session server-side, not just in the browser.
+- Sessions carry a numeric `ttl` attribute (Unix epoch seconds). To have DynamoDB automatically purge expired session records, enable **Time to Live (TTL)** on the table with the TTL attribute name set to `ttl`. Without TTL enabled, expired sessions are still rejected at read time but the records are not auto-deleted.
+
 ### Token storage and security
 
 - The **admin token** is stored only as a SHA-256 hash and is never persisted or returned in plaintext after creation. Save it when the tournament is created.
@@ -98,6 +103,7 @@ npx cdk deploy --app "npx ts-node infra/dynamodb.ts"
    - **Partition key**: `GSI1PK` (String)
    - **Sort key**: `GSI1SK` (String)
    - **Projection**: All attributes
+4. (Recommended) Enable **Time to Live (TTL)** with the attribute name `ttl` so expired session records are purged automatically.
 
 ## AWS Amplify Deployment
 

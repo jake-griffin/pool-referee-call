@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { extractUserMessage } from '@/lib/utils/errors';
 
@@ -20,6 +20,30 @@ export default function ManageDirectorsPage() {
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
 
+  interface DirectorSummary {
+    directorId: string;
+    email: string;
+    name: string;
+    createdAt: string;
+    disabled: boolean;
+  }
+  const [directors, setDirectors] = useState<DirectorSummary[]>([]);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const fetchDirectors = useCallback(async () => {
+    try {
+      const res = await fetch('/api/directors', { credentials: 'include' });
+      if (!res.ok) {
+        setListError(await extractUserMessage(res));
+        return;
+      }
+      setDirectors(await res.json());
+      setListError(null);
+    } catch {
+      setListError('Failed to load directors.');
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -28,7 +52,10 @@ export default function ManageDirectorsPage() {
         if (!res.ok) { router.replace('/login'); return; }
         const data = await res.json();
         if (data.role !== 'admin') { router.replace('/admin'); return; }
-        if (!cancelled) setAuthorized(true);
+        if (!cancelled) {
+          setAuthorized(true);
+          fetchDirectors();
+        }
       } catch {
         router.replace('/login');
       } finally {
@@ -36,7 +63,25 @@ export default function ManageDirectorsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router]);
+  }, [router, fetchDirectors]);
+
+  async function toggleDisabled(directorId: string, disabled: boolean) {
+    try {
+      const res = await fetch(`/api/directors/${directorId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ disabled }),
+      });
+      if (!res.ok) {
+        setListError(await extractUserMessage(res));
+        return;
+      }
+      await fetchDirectors();
+    } catch {
+      setListError('Failed to update director.');
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,6 +107,7 @@ export default function ManageDirectorsPage() {
       setName('');
       setEmail('');
       setPassword('');
+      fetchDirectors();
     } catch {
       setError('Network error. Please try again.');
     } finally {
@@ -152,6 +198,48 @@ export default function ManageDirectorsPage() {
           {isSubmitting ? 'Creating...' : 'Create Director'}
         </button>
       </form>
+
+      {/* Existing directors */}
+      <section className="mt-10">
+        <h2 className="mb-3 text-lg font-semibold text-gray-800">Directors</h2>
+        {listError && (
+          <div className="mb-3 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">
+            {listError}
+          </div>
+        )}
+        {directors.length === 0 ? (
+          <p className="text-sm text-gray-500">No directors yet.</p>
+        ) : (
+          <ul className="divide-y divide-gray-200 rounded-lg border border-gray-200">
+            {directors.map((d) => (
+              <li key={d.directorId} className="flex items-center justify-between px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">
+                    {d.name}
+                    {d.disabled && (
+                      <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                        disabled
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-gray-500">{d.email}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => toggleDisabled(d.directorId, !d.disabled)}
+                  className={`min-h-[36px] rounded-md px-3 py-1.5 text-sm font-medium ${
+                    d.disabled
+                      ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                      : 'bg-red-100 text-red-800 hover:bg-red-200'
+                  }`}
+                >
+                  {d.disabled ? 'Enable' : 'Disable'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </main>
   );
 }

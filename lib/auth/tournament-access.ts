@@ -43,6 +43,13 @@ export function canManageTournament(
  * `adminToken` is the plaintext token from the request (Bearer header or body),
  * checked against the tournament's stored adminTokenHash. Pass null/undefined
  * when the caller doesn't support the legacy token path.
+ *
+ * CONTRACT — request body single-read: the HTTP request body can only be read
+ * once. This helper NEVER reads `request` body; it only inspects cookies (via
+ * getGlobalSession) and the passed-in token. Therefore callers MUST parse the
+ * body themselves (if they need it) and pass any body-supplied admin token in
+ * via the `adminToken` argument BEFORE calling this function. Do not attempt to
+ * read the body again after calling this helper.
  */
 export async function authorizeTournamentManagement(
   request: Request,

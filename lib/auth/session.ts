@@ -20,6 +20,7 @@ import {
   getSession as dbGetSession,
   putGlobalSession,
   getGlobalSession as dbGetGlobalSession,
+  deleteGlobalSession as dbDeleteGlobalSession,
 } from '@/lib/db/queries';
 
 // ---------------------------------------------------------------------------
@@ -277,6 +278,17 @@ export async function getGlobalSession(
 /** Returns a Set-Cookie header string that clears the global session cookie. */
 export function clearGlobalSessionCookie(): string {
   return `${GLOBAL_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
+
+/**
+ * Revokes the global session referenced by the request's cookie: deletes the
+ * server-side record so the session can no longer be used, even if the cookie
+ * value is retained. Safe to call when no session cookie is present.
+ */
+export async function revokeGlobalSession(request: Request): Promise<void> {
+  const sessionId = extractCookie(request, GLOBAL_COOKIE_NAME);
+  if (!sessionId) return;
+  await dbDeleteGlobalSession(sessionId);
 }
 
 /**

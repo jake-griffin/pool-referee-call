@@ -33,6 +33,7 @@ import {
   QueryCommand,
   TransactWriteCommand,
   ScanCommand,
+  DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   TransactionCanceledException,
@@ -80,7 +81,19 @@ export type DirectorRecord = {
   name: string;
   passwordHash: string;
   createdAt: string;
+  // When true the account is disabled and cannot sign in. Optional for
+  // backward compatibility with accounts created before this field existed.
+  disabled?: boolean;
 };
+
+/** Thrown when creating a director whose email is already taken. */
+export class DuplicateEmailError extends Error {
+  readonly code = 'DUPLICATE_EMAIL' as const;
+  constructor() {
+    super('A director with that email already exists.');
+    this.name = 'DuplicateEmailError';
+  }
+}
 
 export type SessionRecord = {
   sessionId: string;
@@ -219,6 +232,18 @@ const globalSessionPK = (sessionId: string) => `GSESSION#${sessionId}`;
 const directorEmailGSI1PK = (email: string) =>
   `DIRECTOR#EMAIL#${email.trim().toLowerCase()}`;
 const ownerGSI1PK = (ownerId: string) => `OWNER#${ownerId}`;
+// Email-uniqueness marker: a dedicated item whose PK is the normalized email,
+// written in the same transaction as the director record to guarantee uniqueness.
+const directorEmailKeyPK = (email: string) =>
+  `DIRECTOR#EMAIL#${email.trim().toLowerCase()}`;
+
+/**
+ * Converts an ISO timestamp to epoch seconds for DynamoDB TTL.
+ * DynamoDB TTL requires a Number attribute holding a Unix epoch (seconds).
+ * Enable TTL on the table using the attribute name "ttl".
+ */
+const ttlEpochSeconds = (isoTimestamp: string): number =>
+  Math.floor(new Date(isoTimestamp).getTime() / 1000);
 
 // ---------------------------------------------------------------------------
 // Tournament
@@ -348,23 +373,93 @@ export async function updateTableNumbers(
 // ---------------------------------------------------------------------------
 
 /**
- * Create a director account. The GSI1 email index enforces lookup-by-email.
- * Uses a condition to avoid clobbering an existing account with the same id.
+ * Create a director account with atomic email-uniqueness enforcement.
+ *
+ * Writes two items in a single TransactWriteItems:
+ *   1. the director record (PK=DIRECTOR#{id}), and
+ *   2. an email-uniqueness marker (PK=DIRECTOR#EMAIL#{email}, SK=UNIQUE),
+ * each conditioned on its own non-existence. If two requests race on the same
+ * email, only one transaction commits; the other throws DuplicateEmailError.
+ *
+ * The director record also carries the GSI1 email index for lookup-by-email.
  */
 export async function putDirector(record: DirectorRecord): Promise<void> {
   const client = getDocumentClient();
-  await client.send(
-    new PutCommand({
+  const email = record.email.trim().toLowerCase();
+  try {
+    await client.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TABLE_NAME,
+              Item: {
+                PK: directorPK(record.directorId),
+                SK: metaSK(),
+                GSI1PK: directorEmailGSI1PK(email),
+                GSI1SK: 'DIRECTOR',
+                ...record,
+                email,
+              },
+              ConditionExpression: 'attribute_not_exists(PK)',
+            },
+          },
+          {
+            Put: {
+              TableName: TABLE_NAME,
+              Item: {
+                PK: directorEmailKeyPK(email),
+                SK: 'UNIQUE',
+                directorId: record.directorId,
+              },
+              ConditionExpression: 'attribute_not_exists(PK)',
+            },
+          },
+        ],
+      }),
+    );
+  } catch (err) {
+    if (isTransactionCancelled(err)) {
+      // A cancelled transaction here means the email marker (or id) already exists.
+      throw new DuplicateEmailError();
+    }
+    throw err;
+  }
+}
+
+/** List all director accounts (admin management). */
+export async function listDirectors(): Promise<DirectorRecord[]> {
+  const client = getDocumentClient();
+  // Directors by email are indexed on GSI1 under DIRECTOR#EMAIL# with a
+  // constant GSI1SK of 'DIRECTOR'; a base-table scan filtered to director META
+  // records is simplest and fine for the expected handful of accounts.
+  const { Items = [] } = await client.send(
+    new ScanCommand({
       TableName: TABLE_NAME,
-      Item: {
-        PK: directorPK(record.directorId),
-        SK: metaSK(),
-        GSI1PK: directorEmailGSI1PK(record.email),
-        GSI1SK: 'DIRECTOR',
-        ...record,
-        email: record.email.trim().toLowerCase(),
-      },
-      ConditionExpression: 'attribute_not_exists(PK)',
+      FilterExpression: 'begins_with(PK, :dpref) AND SK = :meta',
+      ExpressionAttributeValues: { ':dpref': 'DIRECTOR#', ':meta': 'META' },
+    }),
+  );
+  // begins_with(PK, 'DIRECTOR#') also matches the email marker PK, but those
+  // have SK='UNIQUE', so the SK=META filter excludes them.
+  return Items.map(itemToDirector);
+}
+
+/**
+ * Enable or disable a director account. A disabled director cannot sign in.
+ */
+export async function setDirectorDisabled(
+  directorId: string,
+  disabled: boolean,
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: directorPK(directorId), SK: metaSK() },
+      UpdateExpression: 'SET disabled = :d',
+      ConditionExpression: 'attribute_exists(PK)',
+      ExpressionAttributeValues: { ':d': disabled },
     }),
   );
 }
@@ -441,6 +536,8 @@ export async function putSession(record: SessionRecord): Promise<void> {
       Item: {
         PK: pk(record.tournamentId),
         SK: sessionSK(record.sessionId),
+        // Numeric TTL (epoch seconds) so DynamoDB can auto-expire the record.
+        ttl: ttlEpochSeconds(record.expiresAt),
         ...record,
       },
     }),
@@ -475,8 +572,24 @@ export async function putGlobalSession(
       Item: {
         PK: globalSessionPK(record.sessionId),
         SK: metaSK(),
+        // Numeric TTL (epoch seconds) so DynamoDB can auto-expire the record.
+        ttl: ttlEpochSeconds(record.expiresAt),
         ...record,
       },
+    }),
+  );
+}
+
+/**
+ * Delete a global session record by sessionId (used on logout to revoke the
+ * session server-side, not just clear the cookie).
+ */
+export async function deleteGlobalSession(sessionId: string): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: globalSessionPK(sessionId), SK: metaSK() },
     }),
   );
 }
@@ -1070,6 +1183,7 @@ function itemToDirector(item: Record<string, any>): DirectorRecord {
     name: item.name,
     passwordHash: item.passwordHash,
     createdAt: item.createdAt,
+    disabled: item.disabled ?? undefined,
   };
 }
 

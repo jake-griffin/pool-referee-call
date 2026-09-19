@@ -12,7 +12,11 @@
  */
 
 import { NextResponse } from 'next/server';
-import { verifyPassword } from '@/lib/auth/password';
+import {
+  verifyPassword,
+  getDummyPasswordHash,
+  constantTimeEqual,
+} from '@/lib/auth/password';
 import { issueGlobalSession } from '@/lib/auth/session';
 import { getDirectorByEmail } from '@/lib/db/queries';
 
@@ -28,7 +32,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // --- Admin login via shared secret ---
     if (typeof body.adminSecret === 'string' && body.adminSecret.length > 0) {
       const adminSecret = process.env.ADMIN_SECRET;
-      if (adminSecret && body.adminSecret === adminSecret) {
+      if (adminSecret && constantTimeEqual(body.adminSecret, adminSecret)) {
         const { cookieHeader } = await issueGlobalSession({
           role: 'admin',
           entityId: 'admin',
@@ -56,13 +60,21 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const director = await getDirectorByEmail(email);
-    // Always run verification to reduce user-enumeration timing differences.
-    const ok = director
-      ? await verifyPassword(password, director.passwordHash)
-      : await verifyPassword(password, 'scrypt:16384:8:1:00:00');
+    // Always run a full-cost verification (against a real dummy hash when no
+    // user exists) so login timing doesn't reveal whether the email is known.
+    const hashToCheck = director ? director.passwordHash : await getDummyPasswordHash();
+    const ok = await verifyPassword(password, hashToCheck);
 
     if (!director || !ok) {
       return NextResponse.json({ message: 'Invalid credentials.' }, { status: 401 });
+    }
+
+    // Reject disabled accounts (after the password check so timing is uniform).
+    if (director.disabled) {
+      return NextResponse.json(
+        { message: 'This account has been disabled. Contact your administrator.' },
+        { status: 403 },
+      );
     }
 
     const { cookieHeader } = await issueGlobalSession({

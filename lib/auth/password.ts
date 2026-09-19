@@ -17,6 +17,7 @@ import {
   randomBytes,
   scrypt as scryptCb,
   timingSafeEqual,
+  createHash,
   type ScryptOptions,
 } from 'crypto';
 
@@ -97,6 +98,43 @@ export async function verifyPassword(
 
     if (derived.length !== expected.length) return false;
     return timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Anti-enumeration + constant-time helpers
+// ---------------------------------------------------------------------------
+
+let _dummyHash: string | null = null;
+
+/**
+ * Returns a real, full-cost dummy password hash (same scrypt cost and 64-byte
+ * key length as genuine hashes). Verify an incoming password against this when
+ * no matching user exists so the login timing is indistinguishable from the
+ * "known user, wrong password" path. Computed once and cached.
+ */
+export async function getDummyPasswordHash(): Promise<string> {
+  if (_dummyHash === null) {
+    // A fixed, non-guessable input — its plaintext is irrelevant since no real
+    // password will ever match it; only the derivation cost matters.
+    _dummyHash = await hashPassword('dummy-password-for-timing-equalization');
+  }
+  return _dummyHash;
+}
+
+/**
+ * Constant-time comparison of two secrets provided as strings (e.g. the
+ * ADMIN_SECRET). Hashes both sides to fixed length first so the comparison
+ * doesn't leak length, and returns false on any error.
+ */
+export function constantTimeEqual(a: string, b: string): boolean {
+  try {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const ha = createHash('sha256').update(a).digest();
+    const hb = createHash('sha256').update(b).digest();
+    return timingSafeEqual(ha, hb);
   } catch {
     return false;
   }
