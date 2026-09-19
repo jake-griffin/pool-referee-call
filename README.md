@@ -47,6 +47,24 @@ Create a `.env.local` file (or configure in Amplify console) with the following:
 | `AWS_ACCESS_KEY_ID` | IAM access key with DynamoDB permissions |
 | `AWS_SECRET_ACCESS_KEY` | IAM secret access key |
 
+### Tournament Directors and admin access
+
+The app supports two kinds of privileged users:
+
+- **Tournament Directors** are user accounts (email + password) that own the tournaments they create. A director can only see and manage their own tournaments. Passwords are hashed with scrypt (via Node's built-in `crypto`) and never stored or returned in plaintext.
+- **Admin** is the holder of the `ADMIN_SECRET`. The admin can see and manage any tournament without needing per-tournament tokens, and is the only one who can create director accounts (invite-only).
+
+Sign-in flow:
+
+1. Go to `/login`. Directors sign in with email and password; the admin signs in with the `ADMIN_SECRET`. Both receive an HttpOnly session cookie.
+2. `/admin` lists the tournaments you own (directors) or all tournaments (admin), and lets you create new ones.
+3. The admin can open `/admin/directors` to create director accounts. Share the temporary password securely; there is no self-service signup.
+
+Ownership notes:
+
+- Tournaments created by a director are stamped with that director as owner. Tournaments created via the legacy `ADMIN_SECRET` path (or before this feature existed) have no owner and are visible to the admin only.
+- The legacy per-tournament admin token still works for managing a specific tournament, so existing links and bookmarks keep functioning.
+
 ### Token storage and security
 
 - The **admin token** is stored only as a SHA-256 hash and is never persisted or returned in plaintext after creation. Save it when the tournament is created.

@@ -749,10 +749,11 @@ describe('GET /api/tournaments/[id]/state', () => {
 
     const mockState: TournamentStateResponse = {
       lastUpdatedAt: '2025-01-01T12:00:00.000Z',
-      tournament: { name: 'Test Tournament', status: 'active' },
+      tournament: { name: 'Test Tournament', status: 'active', tableNumbers: [1, 2, 3] },
       unansweredQueue: [],
       refereeQueues: {},
       myCalls: [],
+      recentActivity: [],
     };
     vi.mocked(getTournamentState).mockResolvedValue(mockState);
 
@@ -960,20 +961,19 @@ describe('POST /api/tournaments/[id]/join/admin', () => {
 describe('GET /api/tournaments/[id]/join-links', () => {
   const routeParams = { params: Promise.resolve({ id: 'tournament-1' }) };
 
-  it('returns 401 when session is invalid (requireSession throws)', async () => {
+  it('returns 403 when the caller is not authorized (no session)', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
     vi.mocked(getSession).mockResolvedValue(null);
-    vi.mocked(requireSession).mockImplementation(() => {
-      throw new AuthError('Your session has expired — please rejoin using your link.', 401);
-    });
 
     const req = createRequest('GET');
     const res = await joinLinksGet(req, routeParams);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     const body = await res.json();
     assertNoLeakedDetails(body);
   });
 
   it('returns 403 when a non-admin session requests links', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
     const session = makeSession({ role: 'referee' });
     vi.mocked(getSession).mockResolvedValue(session);
     vi.mocked(requireSession).mockImplementation(() => {

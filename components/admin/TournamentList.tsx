@@ -12,10 +12,11 @@ interface TournamentSummary {
 }
 
 interface TournamentListProps {
-  adminSecret: string;
+  /** Bump to trigger a refetch (e.g. after creating a tournament). */
+  reloadKey?: number;
 }
 
-export default function TournamentList({ adminSecret }: TournamentListProps) {
+export default function TournamentList({ reloadKey = 0 }: TournamentListProps) {
   const [tournaments, setTournaments] = useState<TournamentSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,9 +24,7 @@ export default function TournamentList({ adminSecret }: TournamentListProps) {
   const fetchTournaments = useCallback(async () => {
     try {
       const response = await fetch('/api/admin/tournaments', {
-        headers: {
-          Authorization: `Bearer ${adminSecret}`,
-        },
+        credentials: 'include',
       });
 
       if (!response.ok) {
@@ -42,11 +41,11 @@ export default function TournamentList({ adminSecret }: TournamentListProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [adminSecret]);
+  }, []);
 
   useEffect(() => {
     fetchTournaments();
-  }, [fetchTournaments]);
+  }, [fetchTournaments, reloadKey]);
 
   if (isLoading) {
     return (

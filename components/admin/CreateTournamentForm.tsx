@@ -6,7 +6,8 @@ import { extractUserMessage } from '@/lib/utils/errors';
 import JoinLinks from './JoinLinks';
 
 interface CreateTournamentFormProps {
-  adminSecret: string;
+  /** Called after a tournament is successfully created. */
+  onCreated?: () => void;
 }
 
 interface CreatedTournament {
@@ -22,7 +23,7 @@ interface CreatedTournament {
   };
 }
 
-export default function CreateTournamentForm({ adminSecret }: CreateTournamentFormProps) {
+export default function CreateTournamentForm({ onCreated }: CreateTournamentFormProps) {
   const [name, setName] = useState('');
   const [tableRange, setTableRange] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -46,8 +47,8 @@ export default function CreateTournamentForm({ adminSecret }: CreateTournamentFo
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminSecret}`,
         },
+        credentials: 'include',
         body: JSON.stringify({ name: name.trim(), tableRange }),
       });
 
@@ -59,6 +60,7 @@ export default function CreateTournamentForm({ adminSecret }: CreateTournamentFo
 
       const data: CreatedTournament = await response.json();
       setCreated(data);
+      onCreated?.();
 
       // Save tokens to localStorage so the admin dashboard can use them
       localStorage.setItem(`adminToken_${data.tournamentId}`, data.adminToken);

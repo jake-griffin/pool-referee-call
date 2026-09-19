@@ -12,8 +12,10 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getSession, requireSession, AuthError } from '@/lib/auth/session';
+import { getSession, AuthError } from '@/lib/auth/session';
 import { getTournamentMeta } from '@/lib/db/queries';
+import { canManageTournament } from '@/lib/auth/tournament-access';
+import { getGlobalSession } from '@/lib/auth/session';
 
 export async function GET(
   request: Request,
@@ -22,16 +24,27 @@ export async function GET(
   try {
     const { id } = await params;
 
-    // Authenticate — admin session only
-    const session = await getSession(request, id);
-    requireSession(session, id, ['admin']);
-
     // Fetch tournament metadata
     const tournament = await getTournamentMeta(id);
     if (!tournament) {
       return NextResponse.json(
         { message: 'Tournament not found.' },
         { status: 404 },
+      );
+    }
+
+    // Authorize — join tokens are admin-only. Accept either:
+    //   - the per-tournament admin cookie session (legacy dashboard flow), or
+    //   - a global session that owns/administers this tournament.
+    const globalSession = await getGlobalSession(request);
+    const tournamentSession = await getSession(request, id);
+    const authorized =
+      canManageTournament(globalSession, tournament) ||
+      tournamentSession?.role === 'admin';
+    if (!authorized) {
+      return NextResponse.json(
+        { message: 'Insufficient permissions for this action.' },
+        { status: 403 },
       );
     }
 

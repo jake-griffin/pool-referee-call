@@ -12,9 +12,16 @@
  *     "CALL#{callId}"     → call record
  *     "SESSION#{sid}"     → session record
  *
+ *   Director accounts and global (non-tournament) sessions live under their own
+ *   partition keys:
+ *     PK = "DIRECTOR#{directorId}", SK = "META"      → director account
+ *     PK = "GSESSION#{sessionId}",  SK = "META"      → global session (director/admin)
+ *
  * GSI1 (index name: "GSI1", keys: GSI1PK + GSI1SK, project ALL):
- *   Unanswered queue:  GSI1PK = "T#{id}#UNANSWERED", GSI1SK = createdAt
- *   Per-referee queue: GSI1PK = "T#{id}#REF#{refId}", GSI1SK = acknowledgedAt
+ *   Unanswered queue:   GSI1PK = "T#{id}#UNANSWERED", GSI1SK = createdAt
+ *   Per-referee queue:  GSI1PK = "T#{id}#REF#{refId}", GSI1SK = acknowledgedAt
+ *   Director by email:  GSI1PK = "DIRECTOR#EMAIL#{email}", GSI1SK = "DIRECTOR"
+ *   Tournaments by owner:GSI1PK = "OWNER#{ownerId}",       GSI1SK = createdAt
  *
  * Requirements: 2.1, 6.4, 6.5, 7.2, 7.4, 8.2, 9.1
  */
@@ -52,6 +59,26 @@ export type TournamentRecord = {
   // Optional for backward compatibility with tournaments created before this field existed.
   refereeToken?: string;
   playerToken?: string;
+  // Id of the Tournament Director who owns this tournament. Optional for
+  // backward compatibility: tournaments created before director accounts
+  // existed have no owner and are visible to the global admin only.
+  ownerId?: string;
+  createdAt: string;
+};
+
+/**
+ * A Tournament Director account. Directors own the tournaments they create and
+ * can only see/manage their own. The global admin (ADMIN_SECRET) can manage any
+ * tournament regardless of ownership.
+ *
+ * passwordHash is produced by lib/auth/password.ts (scrypt) and is never
+ * returned to clients.
+ */
+export type DirectorRecord = {
+  directorId: string;
+  email: string; // stored lowercased; unique
+  name: string;
+  passwordHash: string;
   createdAt: string;
 };
 
@@ -186,6 +213,13 @@ const unansweredGSI1PK = (tournamentId: string) =>
 const refereeGSI1PK = (tournamentId: string, refereeId: string) =>
   `T#${tournamentId}#REF#${refereeId}`;
 
+// Director + global session + ownership keys
+const directorPK = (directorId: string) => `DIRECTOR#${directorId}`;
+const globalSessionPK = (sessionId: string) => `GSESSION#${sessionId}`;
+const directorEmailGSI1PK = (email: string) =>
+  `DIRECTOR#EMAIL#${email.trim().toLowerCase()}`;
+const ownerGSI1PK = (ownerId: string) => `OWNER#${ownerId}`;
+
 // ---------------------------------------------------------------------------
 // Tournament
 // ---------------------------------------------------------------------------
@@ -214,16 +248,42 @@ export async function getTournamentMeta(
  */
 export async function putTournament(record: TournamentRecord): Promise<void> {
   const client = getDocumentClient();
+  // When the tournament has an owner, index it on GSI1 under the owner
+  // partition so we can list a director's tournaments without a full scan.
+  const ownerIndex = record.ownerId
+    ? { GSI1PK: ownerGSI1PK(record.ownerId), GSI1SK: record.createdAt }
+    : {};
   await client.send(
     new PutCommand({
       TableName: TABLE_NAME,
       Item: {
         PK: pk(record.tournamentId),
         SK: metaSK(),
+        ...ownerIndex,
         ...record,
       },
     }),
   );
+}
+
+/**
+ * List all tournaments owned by a specific director, newest first.
+ * Uses the GSI1 owner partition (OWNER#{ownerId}).
+ */
+export async function listTournamentsByOwner(
+  ownerId: string,
+): Promise<TournamentRecord[]> {
+  const client = getDocumentClient();
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: GSI1_NAME,
+      KeyConditionExpression: 'GSI1PK = :owner',
+      ExpressionAttributeValues: { ':owner': ownerGSI1PK(ownerId) },
+      ScanIndexForward: false, // newest first
+    }),
+  );
+  return Items.map(itemToTournament);
 }
 
 /**
@@ -284,6 +344,68 @@ export async function updateTableNumbers(
 }
 
 // ---------------------------------------------------------------------------
+// Director accounts
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a director account. The GSI1 email index enforces lookup-by-email.
+ * Uses a condition to avoid clobbering an existing account with the same id.
+ */
+export async function putDirector(record: DirectorRecord): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        PK: directorPK(record.directorId),
+        SK: metaSK(),
+        GSI1PK: directorEmailGSI1PK(record.email),
+        GSI1SK: 'DIRECTOR',
+        ...record,
+        email: record.email.trim().toLowerCase(),
+      },
+      ConditionExpression: 'attribute_not_exists(PK)',
+    }),
+  );
+}
+
+/** Fetch a director by id. Returns null if not found. */
+export async function getDirectorById(
+  directorId: string,
+): Promise<DirectorRecord | null> {
+  const client = getDocumentClient();
+  const { Item } = await client.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: directorPK(directorId), SK: metaSK() },
+    }),
+  );
+  if (!Item) return null;
+  return itemToDirector(Item);
+}
+
+/** Fetch a director by email (case-insensitive). Returns null if not found. */
+export async function getDirectorByEmail(
+  email: string,
+): Promise<DirectorRecord | null> {
+  const client = getDocumentClient();
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: GSI1_NAME,
+      KeyConditionExpression: 'GSI1PK = :pk AND GSI1SK = :sk',
+      ExpressionAttributeValues: {
+        ':pk': directorEmailGSI1PK(email),
+        ':sk': 'DIRECTOR',
+      },
+      Limit: 1,
+    }),
+  );
+  if (Items.length === 0) return null;
+  return itemToDirector(Items[0]);
+}
+
+// ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
@@ -323,6 +445,61 @@ export async function putSession(record: SessionRecord): Promise<void> {
       },
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Global sessions (director / admin) — not scoped to a single tournament
+// ---------------------------------------------------------------------------
+
+/**
+ * A global session for a director or the admin. Unlike tournament sessions,
+ * these are not tied to a tournamentId and are looked up by sessionId alone.
+ * entityId holds the directorId (or 'admin' for the global admin).
+ */
+export type GlobalSessionRecord = {
+  sessionId: string;
+  role: 'director' | 'admin';
+  entityId: string;
+  displayName: string;
+  expiresAt: string;
+};
+
+/** Write a global (director/admin) session record. */
+export async function putGlobalSession(
+  record: GlobalSessionRecord,
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        PK: globalSessionPK(record.sessionId),
+        SK: metaSK(),
+        ...record,
+      },
+    }),
+  );
+}
+
+/** Fetch a global session by sessionId. Returns null if not found. */
+export async function getGlobalSession(
+  sessionId: string,
+): Promise<GlobalSessionRecord | null> {
+  const client = getDocumentClient();
+  const { Item } = await client.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: globalSessionPK(sessionId), SK: metaSK() },
+    }),
+  );
+  if (!Item) return null;
+  return {
+    sessionId: Item.sessionId,
+    role: Item.role,
+    entityId: Item.entityId,
+    displayName: Item.displayName,
+    expiresAt: Item.expiresAt,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -880,6 +1057,18 @@ function itemToTournament(item: Record<string, any>): TournamentRecord {
     playerTokenHash: item.playerTokenHash,
     refereeToken: item.refereeToken ?? undefined,
     playerToken: item.playerToken ?? undefined,
+    ownerId: item.ownerId ?? undefined,
+    createdAt: item.createdAt,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function itemToDirector(item: Record<string, any>): DirectorRecord {
+  return {
+    directorId: item.directorId,
+    email: item.email,
+    name: item.name,
+    passwordHash: item.passwordHash,
     createdAt: item.createdAt,
   };
 }

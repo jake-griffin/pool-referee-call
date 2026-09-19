@@ -1,0 +1,342 @@
+/**
+ * Tests for director/admin auth routes and tournament ownership.
+ *
+ * Covers:
+ *  - POST /api/directors (invite-only creation)
+ *  - POST /api/auth/login (admin secret + director credentials)
+ *  - POST/GET /api/admin/tournaments ownership stamping + scoped listing
+ *  - Ownership gating on a per-tournament management route (close)
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { DirectorRecord, TournamentRecord } from '@/lib/db/queries';
+import type { GlobalSessionPayload } from '@/lib/auth/session';
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+vi.mock('@/lib/db/queries', () => ({
+  putDirector: vi.fn(),
+  getDirectorByEmail: vi.fn(),
+  getDirectorById: vi.fn(),
+  putTournament: vi.fn(),
+  listTournaments: vi.fn(),
+  listTournamentsByOwner: vi.fn(),
+  getTournamentMeta: vi.fn(),
+  closeTournament: vi.fn(),
+}));
+
+vi.mock('@/lib/auth/password', () => ({
+  hashPassword: vi.fn(async (p: string) => `scrypt:mock:${p}`),
+  verifyPassword: vi.fn(async () => true),
+}));
+
+vi.mock('@/lib/auth/tokens', async (importOriginal) => {
+  const original = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...original,
+    generateToken: vi.fn(() => 'mock-uuid'),
+    verifyToken: vi.fn(() => false),
+  };
+});
+
+// Mock session module: control getGlobalSession + issueGlobalSession, keep the rest.
+vi.mock('@/lib/auth/session', async (importOriginal) => {
+  const original = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...original,
+    getGlobalSession: vi.fn(async () => null),
+    issueGlobalSession: vi.fn(async () => ({
+      sessionId: 'gsess-1',
+      cookieHeader: 'gsession=gsess-1; HttpOnly; SameSite=Lax; Path=/',
+    })),
+    clearGlobalSessionCookie: vi.fn(() => 'gsession=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT'),
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Imports (after mocks)
+// ---------------------------------------------------------------------------
+
+import {
+  putDirector,
+  getDirectorByEmail,
+  putTournament,
+  listTournaments,
+  listTournamentsByOwner,
+  getTournamentMeta,
+  closeTournament,
+} from '@/lib/db/queries';
+import { verifyPassword } from '@/lib/auth/password';
+import { verifyToken } from '@/lib/auth/tokens';
+import { getGlobalSession, issueGlobalSession } from '@/lib/auth/session';
+
+import { POST as directorsPost } from '@/app/api/directors/route';
+import { POST as loginPost } from '@/app/api/auth/login/route';
+import { POST as createTournamentPost, GET as listTournamentsGet } from '@/app/api/admin/tournaments/route';
+import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const ADMIN_SECRET = 'test-admin-secret';
+
+function req(method: string, body?: unknown, headers?: Record<string, string>): Request {
+  const init: RequestInit = { method, headers: new Headers(headers) };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+    (init.headers as Headers).set('content-type', 'application/json');
+  }
+  return new Request('http://localhost:3000/test', init);
+}
+
+function makeDirector(overrides?: Partial<DirectorRecord>): DirectorRecord {
+  return {
+    directorId: 'd_1',
+    email: 'dana@example.com',
+    name: 'Dana Director',
+    passwordHash: 'scrypt:mock:pw',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function makeTournament(overrides?: Partial<TournamentRecord>): TournamentRecord {
+  return {
+    tournamentId: 't_1',
+    name: 'Test',
+    status: 'active',
+    tableNumbers: [1, 2, 3],
+    adminTokenHash: 'sha256:admin',
+    refereeTokenHash: 'sha256:ref',
+    playerTokenHash: 'sha256:player',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function adminGSession(): GlobalSessionPayload {
+  return {
+    sessionId: 'g1',
+    role: 'admin',
+    entityId: 'admin',
+    displayName: 'Admin',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  };
+}
+
+function directorGSession(directorId = 'd_1'): GlobalSessionPayload {
+  return {
+    sessionId: 'g2',
+    role: 'director',
+    entityId: directorId,
+    displayName: 'Dana',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  process.env.ADMIN_SECRET = ADMIN_SECRET;
+});
+
+// ===========================================================================
+// POST /api/directors
+// ===========================================================================
+
+describe('POST /api/directors', () => {
+  it('returns 401 without admin auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    const res = await directorsPost(
+      req('POST', { name: 'X', email: 'x@y.com', password: 'password123' }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('creates a director when authorized via ADMIN_SECRET bearer', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(null);
+    vi.mocked(putDirector).mockResolvedValue(undefined);
+
+    const res = await directorsPost(
+      req('POST', { name: 'Dana', email: 'Dana@Example.com', password: 'password123' }, {
+        authorization: `Bearer ${ADMIN_SECRET}`,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.email).toBe('dana@example.com'); // lowercased
+    expect(body.directorId).toBeDefined();
+    // Never leak the password hash
+    expect(JSON.stringify(body)).not.toContain('scrypt:');
+    expect(putDirector).toHaveBeenCalled();
+  });
+
+  it('rejects a weak password', async () => {
+    const res = await directorsPost(
+      req('POST', { name: 'Dana', email: 'dana@example.com', password: 'short' }, {
+        authorization: `Bearer ${ADMIN_SECRET}`,
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a duplicate email with 409', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(makeDirector());
+    const res = await directorsPost(
+      req('POST', { name: 'Dana', email: 'dana@example.com', password: 'password123' }, {
+        authorization: `Bearer ${ADMIN_SECRET}`,
+      }),
+    );
+    expect(res.status).toBe(409);
+  });
+});
+
+// ===========================================================================
+// POST /api/auth/login
+// ===========================================================================
+
+describe('POST /api/auth/login', () => {
+  it('logs in the admin with the correct secret', async () => {
+    const res = await loginPost(req('POST', { adminSecret: ADMIN_SECRET }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('set-cookie')).toContain('gsession');
+    const body = await res.json();
+    expect(body.role).toBe('admin');
+    expect(issueGlobalSession).toHaveBeenCalled();
+  });
+
+  it('rejects a wrong admin secret', async () => {
+    const res = await loginPost(req('POST', { adminSecret: 'nope' }));
+    expect(res.status).toBe(401);
+  });
+
+  it('logs in a director with valid credentials', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(makeDirector());
+    vi.mocked(verifyPassword).mockResolvedValue(true);
+
+    const res = await loginPost(req('POST', { email: 'dana@example.com', password: 'password123' }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('set-cookie')).toContain('gsession');
+    const body = await res.json();
+    expect(body.role).toBe('director');
+    expect(body.directorId).toBe('d_1');
+  });
+
+  it('rejects invalid director credentials', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(makeDirector());
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+    const res = await loginPost(req('POST', { email: 'dana@example.com', password: 'bad' }));
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a login for an unknown email without leaking existence', async () => {
+    vi.mocked(getDirectorByEmail).mockResolvedValue(null);
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+    const res = await loginPost(req('POST', { email: 'ghost@example.com', password: 'whatever1' }));
+    expect(res.status).toBe(401);
+  });
+});
+
+// ===========================================================================
+// POST/GET /api/admin/tournaments — ownership
+// ===========================================================================
+
+describe('tournament ownership on create/list', () => {
+  it('stamps ownerId when a director creates a tournament', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(putTournament).mockResolvedValue(undefined);
+
+    const res = await createTournamentPost(
+      req('POST', { name: 'Dana Cup', tableRange: '1-4' }),
+    );
+    expect(res.status).toBe(201);
+    const arg = vi.mocked(putTournament).mock.calls[0][0];
+    expect(arg.ownerId).toBe('d_1');
+  });
+
+  it('does not stamp ownerId for the legacy ADMIN_SECRET create path', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    vi.mocked(putTournament).mockResolvedValue(undefined);
+
+    const res = await createTournamentPost(
+      req('POST', { name: 'Admin Cup', tableRange: '1-4' }, {
+        authorization: `Bearer ${ADMIN_SECRET}`,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const arg = vi.mocked(putTournament).mock.calls[0][0];
+    expect(arg.ownerId).toBeUndefined();
+  });
+
+  it('rejects unauthenticated create', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    const res = await createTournamentPost(req('POST', { name: 'X', tableRange: '1-4' }));
+    expect(res.status).toBe(401);
+  });
+
+  it('lists only the director\'s own tournaments', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(listTournamentsByOwner).mockResolvedValue([makeTournament({ ownerId: 'd_1' })]);
+
+    const res = await listTournamentsGet(req('GET'));
+    expect(res.status).toBe(200);
+    expect(listTournamentsByOwner).toHaveBeenCalledWith('d_1');
+    expect(listTournaments).not.toHaveBeenCalled();
+  });
+
+  it('lists all tournaments for the admin', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(listTournaments).mockResolvedValue([makeTournament()]);
+
+    const res = await listTournamentsGet(req('GET'));
+    expect(res.status).toBe(200);
+    expect(listTournaments).toHaveBeenCalled();
+    expect(listTournamentsByOwner).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Ownership gating on per-tournament management (close)
+// ===========================================================================
+
+describe('close route ownership gating', () => {
+  it('allows the owning director to close their tournament', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(closeTournament).mockResolvedValue(undefined);
+
+    const res = await closePost(req('POST'), { params: Promise.resolve({ id: 't_1' }) });
+    expect(res.status).toBe(200);
+    expect(closeTournament).toHaveBeenCalledWith('t_1');
+  });
+
+  it('forbids a non-owning director', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_OTHER'));
+    vi.mocked(verifyToken).mockReturnValue(false);
+
+    const res = await closePost(req('POST'), { params: Promise.resolve({ id: 't_1' }) });
+    expect(res.status).toBe(401);
+    expect(closeTournament).not.toHaveBeenCalled();
+  });
+
+  it('allows the admin to close any tournament (including ownerless)', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: undefined }));
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(closeTournament).mockResolvedValue(undefined);
+
+    const res = await closePost(req('POST'), { params: Promise.resolve({ id: 't_1' }) });
+    expect(res.status).toBe(200);
+  });
+
+  it('forbids a director on an ownerless tournament', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: undefined }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(verifyToken).mockReturnValue(false);
+
+    const res = await closePost(req('POST'), { params: Promise.resolve({ id: 't_1' }) });
+    expect(res.status).toBe(401);
+  });
+});

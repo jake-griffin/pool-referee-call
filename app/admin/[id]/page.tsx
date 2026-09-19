@@ -67,6 +67,13 @@ export default function TournamentAdminDashboard() {
   const [closeError, setCloseError] = useState<string | null>(null);
   const [isClosed, setIsClosed] = useState(false);
   const [serverJoinLinks, setServerJoinLinks] = useState<{ referee: string; player: string } | null>(null);
+  // True when a director/admin global session authorizes this tournament, so no
+  // per-tournament admin token prompt is needed.
+  const [hasGlobalAccess, setHasGlobalAccess] = useState(false);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+
+  // Whether the dashboard is authorized (via global session or admin token).
+  const isAuthorized = hasGlobalAccess || !!adminToken;
 
   // Fetch the referee/player join links from the server (admin session required).
   // This lets the QR codes render on any device, not just the one that created
@@ -86,21 +93,46 @@ export default function TournamentAdminDashboard() {
     }
   }, [tournamentId]);
 
-  // Load adminToken from localStorage on mount and create session
+  // On mount, try to authorize via a director/admin global session first. If
+  // that works we can manage this tournament without the admin token. Otherwise
+  // fall back to a stored per-tournament admin token.
   useEffect(() => {
-    const stored = localStorage.getItem(`adminToken_${tournamentId}`);
-    if (stored) {
-      setAdminToken(stored);
-      // Ensure we have an admin session cookie for the state endpoint,
-      // then fetch the join links now that the session exists.
-      fetch(`/api/tournaments/${tournamentId}/join/admin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminToken: stored }),
-      })
-        .then(() => fetchJoinLinks())
-        .catch(() => {});
-    }
+    let cancelled = false;
+    (async () => {
+      // 1. Try the global session path (director owner / admin).
+      try {
+        const res = await fetch(`/api/tournaments/${tournamentId}/join/admin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({}),
+        });
+        if (!cancelled && res.ok) {
+          setHasGlobalAccess(true);
+          setCheckingAccess(false);
+          fetchJoinLinks();
+          return;
+        }
+      } catch {
+        // fall through to token path
+      }
+
+      // 2. Fall back to a stored per-tournament admin token.
+      const stored = localStorage.getItem(`adminToken_${tournamentId}`);
+      if (!cancelled && stored) {
+        setAdminToken(stored);
+        fetch(`/api/tournaments/${tournamentId}/join/admin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ adminToken: stored }),
+        })
+          .then(() => fetchJoinLinks())
+          .catch(() => {});
+      }
+      if (!cancelled) setCheckingAccess(false);
+    })();
+    return () => { cancelled = true; };
   }, [tournamentId, fetchJoinLinks]);
 
   const baseUrl = typeof window !== 'undefined'
@@ -122,7 +154,7 @@ export default function TournamentAdminDashboard() {
   const { data: state, isLoading, showConnectionBanner, refetch } = usePolling<TournamentState | null>({
     fetchFn: fetchState,
     intervalMs: 4000,
-    enabled: !!adminToken,
+    enabled: isAuthorized,
   });
 
   async function handleTokenSubmit(e: React.FormEvent) {
@@ -137,6 +169,7 @@ export default function TournamentAdminDashboard() {
         await fetch(`/api/tournaments/${tournamentId}/join/admin`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ adminToken: token }),
         });
         // Session established — fetch join links so QR codes render.
@@ -148,7 +181,7 @@ export default function TournamentAdminDashboard() {
   }
 
   async function handleClose() {
-    if (!adminToken) return;
+    if (!isAuthorized) return;
     setIsClosing(true);
     setCloseError(null);
 
@@ -157,8 +190,11 @@ export default function TournamentAdminDashboard() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
+          // Include the admin token when we only have that (legacy path). When
+          // authorized via a global session, the cookie carries authorization.
+          ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
         },
+        credentials: 'include',
       });
 
       if (!response.ok) {
@@ -176,10 +212,28 @@ export default function TournamentAdminDashboard() {
     }
   }
 
-  if (!adminToken) {
+  if (checkingAccess) {
+    return (
+      <main className="mx-auto max-w-md px-4 py-8">
+        <p className="text-sm text-gray-500">Loading...</p>
+      </main>
+    );
+  }
+
+  if (!isAuthorized) {
     return (
       <main className="mx-auto max-w-md px-4 py-8">
         <h1 className="mb-6 text-2xl font-bold text-gray-900">Tournament Admin</h1>
+        <p className="mb-4 text-sm text-gray-600">
+          Sign in as the tournament&apos;s director to manage it, or enter the
+          tournament admin token below.
+        </p>
+        <a
+          href="/login"
+          className="mb-4 inline-block text-sm font-medium text-blue-600 hover:underline"
+        >
+          Sign in as director / admin
+        </a>
         <form onSubmit={handleTokenSubmit} className="space-y-4">
           <div>
             <label htmlFor="admin-token" className="block text-sm font-medium text-gray-700">
@@ -301,7 +355,7 @@ export default function TournamentAdminDashboard() {
       )}
 
       {/* Manage Tables */}
-      {tournamentStatus === 'active' && adminToken && state?.tournament && (
+      {tournamentStatus === 'active' && isAuthorized && state?.tournament && (
         <section className="mb-8">
           <ManageTables
             tournamentId={tournamentId}

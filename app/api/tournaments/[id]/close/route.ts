@@ -8,7 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { getTournamentMeta, closeTournament } from '@/lib/db/queries';
-import { verifyToken } from '@/lib/auth/tokens';
+import { authorizeTournamentManagement } from '@/lib/auth/tournament-access';
 
 export async function POST(
   request: Request,
@@ -17,14 +17,8 @@ export async function POST(
   try {
     const { id } = await params;
 
-    // Extract adminToken from body JSON or Authorization header
+    // Extract the (optional) legacy admin token from body JSON or header.
     const adminToken = await extractAdminToken(request);
-    if (!adminToken) {
-      return NextResponse.json(
-        { message: 'Unauthorized. A valid admin token is required.' },
-        { status: 401 },
-      );
-    }
 
     // Fetch tournament metadata
     const tournament = await getTournamentMeta(id);
@@ -35,11 +29,11 @@ export async function POST(
       );
     }
 
-    // Verify admin token
-    const isValid = verifyToken(adminToken, tournament.adminTokenHash);
-    if (!isValid) {
+    // Authorize: owning director / admin session, or legacy admin token.
+    const allowed = await authorizeTournamentManagement(request, tournament, adminToken);
+    if (!allowed) {
       return NextResponse.json(
-        { message: 'Unauthorized. A valid admin token is required.' },
+        { message: 'Unauthorized. You do not have access to this tournament.' },
         { status: 401 },
       );
     }

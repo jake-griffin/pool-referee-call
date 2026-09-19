@@ -23,13 +23,13 @@
  */
 
 import { NextResponse } from 'next/server';
-import { verifyToken } from '@/lib/auth/tokens';
 import {
   getTournamentMeta,
   queryUnansweredQueue,
   queryAllTournamentItems,
   updateTableNumbers,
 } from '@/lib/db/queries';
+import { authorizeTournamentManagement } from '@/lib/auth/tournament-access';
 import { parseTableRange } from '@/lib/tables/range-parser';
 
 export async function PUT(
@@ -47,14 +47,8 @@ export async function PUT(
       return NextResponse.json({ message: 'Invalid JSON body.' }, { status: 400 });
     }
 
-    // Extract admin token from Authorization header or body
+    // Extract the (optional) legacy admin token from Authorization header or body
     const adminToken = extractAdminToken(request, body);
-    if (!adminToken) {
-      return NextResponse.json(
-        { message: 'Unauthorized. A valid admin token is required.' },
-        { status: 401 },
-      );
-    }
 
     // Fetch tournament metadata
     const tournament = await getTournamentMeta(id);
@@ -62,10 +56,11 @@ export async function PUT(
       return NextResponse.json({ message: 'Tournament not found.' }, { status: 404 });
     }
 
-    // Verify admin token
-    if (!verifyToken(adminToken, tournament.adminTokenHash)) {
+    // Authorize: owning director / admin session, or legacy admin token.
+    const allowed = await authorizeTournamentManagement(request, tournament, adminToken);
+    if (!allowed) {
       return NextResponse.json(
-        { message: 'Unauthorized. A valid admin token is required.' },
+        { message: 'Unauthorized. You do not have access to this tournament.' },
         { status: 401 },
       );
     }

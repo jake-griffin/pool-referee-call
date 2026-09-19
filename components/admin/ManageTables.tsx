@@ -6,7 +6,8 @@ import { extractUserMessage } from '@/lib/utils/errors';
 
 interface ManageTablesProps {
   tournamentId: string;
-  adminToken: string;
+  /** Legacy per-tournament admin token. Optional when authorized via session. */
+  adminToken?: string | null;
   tableNumbers: number[];
   /** Called after a successful update so the dashboard can refetch state. */
   onUpdated?: () => void;
@@ -41,8 +42,11 @@ export default function ManageTables({
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
+          // Include the admin token on the legacy path; when authorized via a
+          // director/admin session the cookie carries authorization.
+          ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify({ tableNumbers: nextTables }),
       });
 

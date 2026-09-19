@@ -10,24 +10,44 @@
 import { NextResponse } from 'next/server';
 import { parseTableRange } from '@/lib/tables/range-parser';
 import { generateToken, hashToken } from '@/lib/auth/tokens';
-import { putTournament, listTournaments } from '@/lib/db/queries';
+import {
+  putTournament,
+  listTournaments,
+  listTournamentsByOwner,
+} from '@/lib/db/queries';
+import { getGlobalSession, type GlobalSessionPayload } from '@/lib/auth/session';
 
 // ---------------------------------------------------------------------------
-// Auth helper
+// Auth helpers
 // ---------------------------------------------------------------------------
 
-function isAuthorized(request: Request): boolean {
+/** True if the request carries a valid ADMIN_SECRET Bearer header. */
+function hasAdminSecret(request: Request): boolean {
   const authHeader = request.headers.get('authorization');
-  if (!authHeader) return false;
-
   const adminSecret = process.env.ADMIN_SECRET;
-  if (!adminSecret) return false;
-
-  // Expect "Bearer <secret>"
+  if (!authHeader || !adminSecret) return false;
   const parts = authHeader.split(' ');
   if (parts.length !== 2 || parts[0] !== 'Bearer') return false;
-
   return parts[1] === adminSecret;
+}
+
+/**
+ * Resolves the caller's identity for tournament create/list. Supports:
+ *   - the ADMIN_SECRET Bearer header (legacy global admin), and
+ *   - a global session cookie (director or admin).
+ * Returns null when unauthenticated.
+ */
+async function resolveCaller(
+  request: Request,
+): Promise<{ role: 'admin' | 'director'; directorId?: string } | null> {
+  if (hasAdminSecret(request)) return { role: 'admin' };
+
+  const session: GlobalSessionPayload | null = await getGlobalSession(request);
+  if (session?.role === 'admin') return { role: 'admin' };
+  if (session?.role === 'director') {
+    return { role: 'director', directorId: session.entityId };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,9 +56,10 @@ function isAuthorized(request: Request): boolean {
 
 export async function POST(request: Request): Promise<NextResponse> {
   // 1. Authorize
-  if (!isAuthorized(request)) {
+  const caller = await resolveCaller(request);
+  if (!caller) {
     return NextResponse.json(
-      { message: 'Unauthorized. A valid ADMIN_SECRET is required.' },
+      { message: 'Unauthorized. Sign in as a director or admin to create tournaments.' },
       { status: 401 },
     );
   }
@@ -92,6 +113,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   const tournamentId = `t_${generateToken()}`;
   const createdAt = new Date().toISOString();
 
+  // Stamp ownership when a director creates the tournament. Admin-created
+  // tournaments (legacy ADMIN_SECRET path) remain ownerless, i.e. admin-only.
+  const ownerId = caller.role === 'director' ? caller.directorId : undefined;
+
   // 6. Write to DynamoDB
   try {
     await putTournament({
@@ -106,6 +131,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       // the join QR codes later on any device. Admin token is never stored.
       refereeToken,
       playerToken,
+      ownerId,
       createdAt,
     });
   } catch {
@@ -144,16 +170,20 @@ export async function POST(request: Request): Promise<NextResponse> {
 
 export async function GET(request: Request): Promise<NextResponse> {
   // 1. Authorize
-  if (!isAuthorized(request)) {
+  const caller = await resolveCaller(request);
+  if (!caller) {
     return NextResponse.json(
-      { message: 'Unauthorized. A valid ADMIN_SECRET is required.' },
+      { message: 'Unauthorized. Sign in as a director or admin to view tournaments.' },
       { status: 401 },
     );
   }
 
-  // 2. List tournaments
+  // 2. List tournaments — admin sees all; a director sees only their own.
   try {
-    const tournaments = await listTournaments();
+    const tournaments =
+      caller.role === 'admin'
+        ? await listTournaments()
+        : await listTournamentsByOwner(caller.directorId!);
 
     // Return summaries only (no token hashes)
     const summaries = tournaments.map((t) => ({
@@ -162,6 +192,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       status: t.status,
       createdAt: t.createdAt,
       tableNumbers: t.tableNumbers,
+      ownerId: t.ownerId ?? null,
     }));
 
     return NextResponse.json(summaries, { status: 200 });

@@ -15,7 +15,12 @@
  */
 
 import { generateToken } from '@/lib/auth/tokens';
-import { putSession, getSession as dbGetSession } from '@/lib/db/queries';
+import {
+  putSession,
+  getSession as dbGetSession,
+  putGlobalSession,
+  getGlobalSession as dbGetGlobalSession,
+} from '@/lib/db/queries';
 
 // ---------------------------------------------------------------------------
 // Exported types
@@ -196,8 +201,120 @@ export function requireSession(
 }
 
 // ---------------------------------------------------------------------------
+// Global sessions (director / admin)
+// ---------------------------------------------------------------------------
+
+export interface GlobalSessionPayload {
+  sessionId: string;
+  role: 'director' | 'admin';
+  entityId: string; // directorId, or 'admin' for the global admin
+  displayName: string;
+  expiresAt: string;
+}
+
+const GLOBAL_COOKIE_NAME = 'gsession';
+
+/**
+ * Issues a global (director/admin) session that is not tied to a single
+ * tournament. Persists a GSESSION# record and returns a Set-Cookie header for
+ * the `gsession` cookie.
+ */
+export async function issueGlobalSession(
+  payload: Omit<GlobalSessionPayload, 'sessionId' | 'expiresAt'>,
+  ttlHours: number = DEFAULT_TTL_HOURS,
+): Promise<{ sessionId: string; cookieHeader: string }> {
+  const sessionId = generateToken();
+  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();
+
+  await putGlobalSession({
+    sessionId,
+    role: payload.role,
+    entityId: payload.entityId,
+    displayName: payload.displayName,
+    expiresAt,
+  });
+
+  const expires = new Date(expiresAt).toUTCString();
+  const isProduction = process.env.NODE_ENV === 'production';
+  const securePart = isProduction ? '; Secure' : '';
+  const cookieHeader = [
+    `${GLOBAL_COOKIE_NAME}=${sessionId}`,
+    `HttpOnly`,
+    `SameSite=Lax`,
+    `Path=/`,
+    `Expires=${expires}`,
+    securePart,
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  return { sessionId, cookieHeader };
+}
+
+/**
+ * Reads and validates the global session cookie. Returns null when absent,
+ * unknown, or expired.
+ */
+export async function getGlobalSession(
+  request: Request,
+): Promise<GlobalSessionPayload | null> {
+  const sessionId = extractCookie(request, GLOBAL_COOKIE_NAME);
+  if (!sessionId) return null;
+
+  const record = await dbGetGlobalSession(sessionId);
+  if (!record) return null;
+  if (new Date(record.expiresAt) <= new Date()) return null;
+
+  return {
+    sessionId: record.sessionId,
+    role: record.role,
+    entityId: record.entityId,
+    displayName: record.displayName,
+    expiresAt: record.expiresAt,
+  };
+}
+
+/** Returns a Set-Cookie header string that clears the global session cookie. */
+export function clearGlobalSessionCookie(): string {
+  return `${GLOBAL_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
+
+/**
+ * Asserts the request carries a global session with one of the allowed roles.
+ * Throws AuthError otherwise.
+ */
+export function requireGlobalRole(
+  session: GlobalSessionPayload | null,
+  allowedRoles: GlobalSessionPayload['role'][],
+): asserts session is GlobalSessionPayload {
+  if (!session) {
+    throw new AuthError('You must be signed in to do that.', 401);
+  }
+  if (!allowedRoles.includes(session.role)) {
+    throw new AuthError('Insufficient permissions for this action.', 403);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parses the Cookie request header and returns the value of the named cookie,
+ * or null if not present.
+ */
+function extractCookie(request: Request, name: string): string | null {
+  const cookieHeader = request.headers.get('cookie');
+  if (!cookieHeader) return null;
+
+  for (const part of cookieHeader.split(';')) {
+    const [rawKey, ...rest] = part.split('=');
+    if (rawKey.trim() === name) {
+      return rest.join('=').trim() || null;
+    }
+  }
+  return null;
+}
 
 /**
  * Parses the Cookie request header and returns the value of the sessionId

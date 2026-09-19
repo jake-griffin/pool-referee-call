@@ -8,9 +8,10 @@
  */
 
 import { NextResponse } from 'next/server';
-import { verifyToken } from '@/lib/auth/tokens';
 import { getTournamentMeta } from '@/lib/db/queries';
-import { issueSession } from '@/lib/auth/session';
+import { issueSession, getGlobalSession } from '@/lib/auth/session';
+import { canManageTournament } from '@/lib/auth/tournament-access';
+import { verifyToken } from '@/lib/auth/tokens';
 
 export async function POST(
   request: Request,
@@ -19,24 +20,14 @@ export async function POST(
   try {
     const { id } = await params;
 
-    // Parse request body
-    let body: unknown;
+    // Body is optional now — a director/admin global session can authorize
+    // without an admin token. Parse leniently.
+    let adminToken: string | undefined;
     try {
-      body = await request.json();
+      const body = (await request.json()) as { adminToken?: string };
+      if (typeof body?.adminToken === 'string') adminToken = body.adminToken;
     } catch {
-      return NextResponse.json(
-        { message: 'Invalid JSON body.' },
-        { status: 400 },
-      );
-    }
-
-    const { adminToken } = body as { adminToken?: string };
-
-    if (!adminToken) {
-      return NextResponse.json(
-        { message: 'Admin token is required.' },
-        { status: 401 },
-      );
+      // No/!JSON body — fine when a global session authorizes.
     }
 
     // Fetch tournament metadata
@@ -48,15 +39,20 @@ export async function POST(
       );
     }
 
-    // Verify admin token
-    if (!verifyToken(adminToken, tournament.adminTokenHash)) {
+    // Authorize: owning director / admin global session, or a valid admin token.
+    const globalSession = await getGlobalSession(request);
+    const authorized =
+      canManageTournament(globalSession, tournament) ||
+      (!!adminToken && verifyToken(adminToken, tournament.adminTokenHash));
+
+    if (!authorized) {
       return NextResponse.json(
-        { message: 'Invalid admin token.' },
+        { message: 'Unauthorized. You do not have access to this tournament.' },
         { status: 401 },
       );
     }
 
-    // Issue an admin session
+    // Issue a per-tournament admin cookie session (used by the state endpoint).
     const { cookieHeader } = await issueSession({
       tournamentId: id,
       role: 'admin',
