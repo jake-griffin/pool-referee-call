@@ -29,6 +29,7 @@ export default function CreateTournamentForm({ onCreated }: CreateTournamentForm
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedTournament | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const tablePreview = useMemo(() => {
     if (!tableRange.trim()) return null;
@@ -89,22 +90,37 @@ export default function CreateTournamentForm({ onCreated }: CreateTournamentForm
           </p>
         </div>
 
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <p className="text-sm font-medium text-gray-800">
-            Admin token (optional backup)
-          </p>
-          <p className="mt-1 text-xs text-gray-600">
-            You manage this tournament from your account — you don&apos;t need this
-            token. Save it only if you want to grant someone one-off management
-            access to this tournament without a sign-in. It cannot be retrieved
-            again later.
-          </p>
-          <dl className="mt-3 text-sm">
-            <div>
-              <dt className="sr-only">Admin Token</dt>
-              <dd className="font-mono text-xs break-all text-gray-900">{created.adminToken}</dd>
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            aria-expanded={showAdvanced}
+            className="text-sm font-medium text-gray-600 hover:text-gray-800"
+          >
+            {showAdvanced ? '▾ Hide advanced' : '▸ Show advanced'}
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+              <p className="text-sm font-medium text-gray-800">
+                Admin token (optional backup)
+              </p>
+              <p className="mt-1 text-xs text-gray-600">
+                You already manage this tournament from your account, so you
+                normally won&apos;t need this. It&apos;s a fallback credential:
+                anyone with it can manage this tournament by entering it on the
+                tournament admin page, without a director account. Keep it
+                secret, and only save it if you want that fallback. It cannot be
+                retrieved again later.
+              </p>
+              <dl className="mt-3 text-sm">
+                <div>
+                  <dt className="sr-only">Admin Token</dt>
+                  <dd className="font-mono text-xs break-all text-gray-900">{created.adminToken}</dd>
+                </div>
+              </dl>
             </div>
-          </dl>
+          )}
         </div>
 
         <JoinLinks
@@ -114,7 +130,7 @@ export default function CreateTournamentForm({ onCreated }: CreateTournamentForm
 
         <button
           type="button"
-          onClick={() => setCreated(null)}
+          onClick={() => { setCreated(null); setShowAdvanced(false); }}
           className="min-h-[44px] min-w-[44px] rounded-md bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-300"
         >
           Create Another Tournament
