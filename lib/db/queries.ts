@@ -39,6 +39,7 @@ import {
   TransactionCanceledException,
 } from '@aws-sdk/client-dynamodb';
 import { getDocumentClient, TABLE_NAME, GSI1_NAME } from './client';
+import { createHash } from 'crypto';
 import type { SessionPayload } from '@/lib/auth/session';
 import { assignPositions } from '@/lib/queue/position';
 
@@ -132,6 +133,21 @@ export type CallRecord = {
   completedAt: string | null;
 };
 
+/**
+ * A Web Push subscription belonging to a referee in a tournament. Stored so the
+ * server can push "new call" notifications to that referee's device(s).
+ * subId is a stable hash of the endpoint so re-subscribing the same device is
+ * idempotent (overwrites rather than duplicates).
+ */
+export type PushSubscriptionRecord = {
+  subId: string;
+  tournamentId: string;
+  refereeId: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  createdAt: string;
+};
+
 // ---------------------------------------------------------------------------
 // Typed error for acknowledge race condition
 // ---------------------------------------------------------------------------
@@ -221,6 +237,11 @@ const refSK = (refereeId: string) => `REF#${refereeId}`;
 const teamSK = (teamId: string) => `TEAM#${teamId}`;
 const callSK = (callId: string) => `CALL#${callId}`;
 const sessionSK = (sessionId: string) => `SESSION#${sessionId}`;
+const pushSK = (subId: string) => `PUSH#${subId}`;
+
+/** Stable id for a push subscription, derived from its endpoint. */
+export const pushSubIdFromEndpoint = (endpoint: string): string =>
+  createHash('sha256').update(endpoint).digest('hex');
 const unansweredGSI1PK = (tournamentId: string) =>
   `T#${tournamentId}#UNANSWERED`;
 const refereeGSI1PK = (tournamentId: string, refereeId: string) =>
@@ -705,6 +726,59 @@ export async function putTeam(record: TeamRecord): Promise<void> {
         SK: teamSK(record.teamId),
         ...record,
       },
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Push subscriptions
+// ---------------------------------------------------------------------------
+
+/**
+ * Store (or overwrite) a referee's Web Push subscription. Keyed by a hash of
+ * the endpoint so re-subscribing the same device is idempotent.
+ */
+export async function putPushSubscription(
+  record: PushSubscriptionRecord,
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        PK: pk(record.tournamentId),
+        SK: pushSK(record.subId),
+        ...record,
+      },
+    }),
+  );
+}
+
+/** List all push subscriptions for a tournament. */
+export async function listPushSubscriptions(
+  tournamentId: string,
+): Promise<PushSubscriptionRecord[]> {
+  const client = getDocumentClient();
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pref)',
+      ExpressionAttributeValues: { ':pk': pk(tournamentId), ':pref': 'PUSH#' },
+    }),
+  );
+  return Items.map(itemToPushSubscription);
+}
+
+/** Delete a push subscription by its subId. */
+export async function deletePushSubscription(
+  tournamentId: string,
+  subId: string,
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: pk(tournamentId), SK: pushSK(subId) },
     }),
   );
 }
@@ -1221,6 +1295,18 @@ function itemToTournament(item: Record<string, any>): TournamentRecord {
     refereeToken: item.refereeToken ?? undefined,
     playerToken: item.playerToken ?? undefined,
     ownerId: item.ownerId ?? undefined,
+    createdAt: item.createdAt,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function itemToPushSubscription(item: Record<string, any>): PushSubscriptionRecord {
+  return {
+    subId: item.subId,
+    tournamentId: item.tournamentId,
+    refereeId: item.refereeId,
+    endpoint: item.endpoint,
+    keys: { p256dh: item.keys?.p256dh, auth: item.keys?.auth },
     createdAt: item.createdAt,
   };
 }

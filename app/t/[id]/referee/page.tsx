@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import { usePolling } from '@/lib/hooks/usePolling';
 import StickyHeader from '@/components/referee/StickyHeader';
 import QueueTabs from '@/components/referee/QueueTabs';
+import EnableNotifications from '@/components/referee/EnableNotifications';
 
 interface UnansweredCallEntry {
   callId: string;
@@ -88,6 +89,8 @@ export default function RefereePage() {
         unansweredCount={unansweredCalls.length}
         myQueueCount={myRefereeQueue.length}
       />
+
+      <EnableNotifications tournamentId={tournamentId} />
 
       {showConnectionBanner && (
         <div className="bg-yellow-50 border-b border-yellow-200 px-4 py-2 text-center text-sm text-yellow-800">

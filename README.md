@@ -46,6 +46,46 @@ Create a `.env.local` file (or configure in Amplify console) with the following:
 | `AWS_REGION` | AWS region for DynamoDB (default: `us-east-1`) |
 | `AWS_ACCESS_KEY_ID` | IAM access key with DynamoDB permissions |
 | `AWS_SECRET_ACCESS_KEY` | IAM secret access key |
+| `VAPID_PUBLIC_KEY` | Web Push VAPID public key (see Push Notifications below). Optional — push is disabled if unset. |
+| `VAPID_PRIVATE_KEY` | Web Push VAPID private key. Keep secret. |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Same value as `VAPID_PUBLIC_KEY`; exposed to the browser to create subscriptions. |
+| `VAPID_SUBJECT` | Contact URI for push (`mailto:you@example.com` or an https URL). |
+
+## Push Notifications (referee call alerts)
+
+Referees can opt in to OS-level notifications so their phone alerts them when a
+new call comes in, even when the app isn't in the foreground. This uses the Web
+Push standard (Push API + service worker + VAPID) — no native app required.
+
+### Setup
+
+1. Generate a VAPID keypair once:
+   ```bash
+   npx web-push generate-vapid-keys
+   ```
+2. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `NEXT_PUBLIC_VAPID_PUBLIC_KEY`
+   (the public key again) plus `VAPID_SUBJECT` in your environment / Amplify
+   console. If these are unset, the app runs normally but the "Enable
+   notifications" control is hidden and no pushes are sent.
+3. Deploy. Referees will see an "Enable call notifications" button on their
+   tournament page; tapping it requests permission and subscribes their device.
+
+Notifications are sent to **all** referees who have enabled them in a tournament
+whenever a new call is created. Sending is best-effort and never blocks or fails
+call creation; subscriptions the push service reports as expired are pruned
+automatically.
+
+### Platform notes
+
+- **Android / Chrome / Firefox / desktop**: works in the browser after the
+  referee enables notifications.
+- **iOS / iPhone (Safari)**: Apple only allows Web Push for sites **installed to
+  the Home Screen** as a PWA, on **iOS 16.4 or later**. Referees on iPhone must
+  use Share → "Add to Home Screen", open the app from that icon, then enable
+  notifications. Without installing, iOS will not deliver web push.
+- Delivery is best-effort and may be delayed when the browser is fully closed on
+  some platforms; the in-app queue still updates live via polling while the page
+  is open.
 
 ### Tournament Directors and admin access
 

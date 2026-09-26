@@ -9,11 +9,36 @@
 import { NextResponse } from 'next/server';
 import { getSession, requireSession, AuthError } from '@/lib/auth/session';
 import { createCall } from '@/lib/calls/manager';
+import { listPushSubscriptions } from '@/lib/db/queries';
+import { sendToSubscriptions } from '@/lib/push/send';
 import {
   TournamentClosedError,
   InvalidTableError,
   MaxCallsError,
 } from '@/lib/calls/errors';
+
+/**
+ * Notify all referee subscriptions in a tournament that a new call arrived.
+ * Fire-and-forget: failures are swallowed so they never affect call creation.
+ */
+async function notifyReferees(
+  tournamentId: string,
+  tableNumber: number,
+  teamName: string,
+): Promise<void> {
+  try {
+    const subs = await listPushSubscriptions(tournamentId);
+    if (subs.length === 0) return;
+    await sendToSubscriptions(subs, {
+      title: `Table ${tableNumber} needs a referee`,
+      body: `${teamName} requested a referee at table ${tableNumber}.`,
+      url: `/t/${tournamentId}/referee`,
+      tag: `call-${tournamentId}`,
+    });
+  } catch {
+    // Never let notification errors surface to the caller.
+  }
+}
 
 export async function POST(
   request: Request,
@@ -54,6 +79,9 @@ export async function POST(
       teamName: session.displayName,
       tableNumber,
     });
+
+    // Notify referees (fire-and-forget — do not block or fail the response).
+    void notifyReferees(id, record.tableNumber, record.teamName);
 
     return NextResponse.json(
       {
