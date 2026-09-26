@@ -313,6 +313,14 @@ export default function TournamentAdminDashboard() {
       {!queuesMaximized && (
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
+          {hasGlobalAccess && (
+            <a
+              href="/admin"
+              className="mb-1 inline-block text-sm font-medium text-blue-600 hover:underline"
+            >
+              &larr; All tournaments
+            </a>
+          )}
           <h1 className="text-2xl font-bold text-gray-900">{tournamentName}</h1>
           <span
             className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
