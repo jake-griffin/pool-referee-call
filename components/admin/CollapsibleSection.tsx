@@ -29,7 +29,7 @@ export default function CollapsibleSection({
         className="flex w-full items-center justify-between px-4 py-3 text-left"
       >
         <span className="text-sm font-semibold text-gray-800">{title}</span>
-        <span className="text-gray-500" aria-hidden="true">
+        <span className="text-xl leading-none text-gray-500" aria-hidden="true">
           {open ? '▾' : '▸'}
         </span>
       </button>
