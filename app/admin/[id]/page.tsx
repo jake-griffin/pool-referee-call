@@ -73,6 +73,8 @@ export default function TournamentAdminDashboard() {
   // per-tournament admin token prompt is needed.
   const [hasGlobalAccess, setHasGlobalAccess] = useState(false);
   const [checkingAccess, setCheckingAccess] = useState(true);
+  // When true, only the Queue Board is shown; all other sections are hidden.
+  const [queuesMaximized, setQueuesMaximized] = useState(false);
 
   // Whether the dashboard is authorized (via global session or admin token).
   const isAuthorized = hasGlobalAccess || !!adminToken;
@@ -307,6 +309,7 @@ export default function TournamentAdminDashboard() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       {/* Header */}
+      {!queuesMaximized && (
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{tournamentName}</h1>
@@ -363,6 +366,7 @@ export default function TournamentAdminDashboard() {
           </div>
         )}
       </div>
+      )}
 
       {closeError && (
         <div className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">
@@ -377,7 +381,7 @@ export default function TournamentAdminDashboard() {
       )}
 
       {/* Join Links */}
-      {(refereeLink || playerLink) && (
+      {!queuesMaximized && (refereeLink || playerLink) && (
         <section className="mb-8">
           <CollapsibleSection title="Join Links">
             <JoinLinks
@@ -390,7 +394,7 @@ export default function TournamentAdminDashboard() {
       )}
 
       {/* Manage Tables */}
-      {tournamentStatus === 'active' && isAuthorized && state?.tournament && (
+      {!queuesMaximized && tournamentStatus === 'active' && isAuthorized && state?.tournament && (
         <section className="mb-8">
           <CollapsibleSection title="Manage Tables">
             <ManageTables
@@ -405,7 +409,7 @@ export default function TournamentAdminDashboard() {
       )}
 
       {/* Participants */}
-      {state?.participants && (
+      {!queuesMaximized && state?.participants && (
         <section className="mb-8">
           <CollapsibleSection title="Participants">
             <ParticipantsList
@@ -420,6 +424,27 @@ export default function TournamentAdminDashboard() {
 
       {/* Queue Board */}
       <section>
+        <div className="mb-2 flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => setQueuesMaximized((v) => !v)}
+            aria-label={queuesMaximized ? 'Exit full screen' : 'Maximize queues'}
+            title={queuesMaximized ? 'Exit full screen' : 'Maximize queues'}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100"
+          >
+            {queuesMaximized ? (
+              /* Minimize / exit-fullscreen icon */
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            ) : (
+              /* Maximize / fullscreen icon */
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        </div>
         {isLoading ? (
           <div className="py-8 text-center text-sm text-gray-500">Loading tournament state...</div>
         ) : state ? (
