@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 interface MyCall {
   callId: string;
   tableNumber: number;
@@ -12,6 +14,8 @@ interface MyCall {
 interface MyCallsListProps {
   myCalls: MyCall[];
   lastUpdatedAt: string;
+  /** Cancel one of the player's active calls. */
+  onCancel?: (callId: string) => Promise<void>;
 }
 
 function formatTimestamp(isoString: string): string {
@@ -47,7 +51,78 @@ function getStatusDisplay(call: MyCall): { text: string; badgeClass: string } {
   return { text: call.status, badgeClass: 'bg-gray-100 text-gray-800' };
 }
 
-export default function MyCallsList({ myCalls, lastUpdatedAt }: MyCallsListProps) {
+function CallRow({
+  call,
+  onCancel,
+}: {
+  call: MyCall;
+  onCancel?: (callId: string) => Promise<void>;
+}) {
+  const { text, badgeClass } = getStatusDisplay(call);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function handleCancel() {
+    if (!onCancel) return;
+    setBusy(true);
+    try {
+      await onCancel(call.callId);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <li className="rounded-md border border-gray-100 bg-gray-50 p-3">
+      <div className="flex items-start justify-between">
+        <p className="text-base font-bold text-gray-900">Table {call.tableNumber}</p>
+        <span
+          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}
+        >
+          {call.status === 'unanswered' ? 'Waiting' : 'Acknowledged'}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-gray-600">{text}</p>
+
+      {onCancel && (
+        <div className="mt-2">
+          {confirming ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-red-700">Cancel this call?</span>
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={busy}
+                className="rounded bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {busy ? 'Cancelling…' : 'Yes, cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                disabled={busy}
+                className="rounded bg-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+              >
+                Keep
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              className="text-xs font-medium text-red-600 hover:underline"
+            >
+              Cancel call
+            </button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+export default function MyCallsList({ myCalls, lastUpdatedAt, onCancel }: MyCallsListProps) {
   // Filter to only active calls (exclude completed)
   const activeCalls = myCalls.filter(
     (c) => c.status === 'unanswered' || c.status === 'acknowledged',
@@ -74,27 +149,9 @@ export default function MyCallsList({ myCalls, lastUpdatedAt }: MyCallsListProps
       <h2 className="text-lg font-semibold text-gray-900">My Calls</h2>
 
       <ul className="mt-3 space-y-3">
-        {activeCalls.map((call) => {
-          const { text, badgeClass } = getStatusDisplay(call);
-          return (
-            <li
-              key={call.callId}
-              className="rounded-md border border-gray-100 bg-gray-50 p-3"
-            >
-              <div className="flex items-start justify-between">
-                <p className="text-base font-bold text-gray-900">
-                  Table {call.tableNumber}
-                </p>
-                <span
-                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}
-                >
-                  {call.status === 'unanswered' ? 'Waiting' : 'Acknowledged'}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-gray-600">{text}</p>
-            </li>
-          );
-        })}
+        {activeCalls.map((call) => (
+          <CallRow key={call.callId} call={call} onCancel={onCancel} />
+        ))}
       </ul>
 
       {lastUpdatedAt && (

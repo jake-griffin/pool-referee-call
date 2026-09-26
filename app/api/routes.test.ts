@@ -48,6 +48,8 @@ vi.mock('@/lib/calls/manager', () => ({
   createCall: vi.fn(),
   acknowledgeCall: vi.fn(),
   completeCall: vi.fn(),
+  cancelCall: vi.fn(),
+  completeCallAsAdmin: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -69,7 +71,7 @@ import {
 
 import { generateToken, hashToken, verifyToken } from '@/lib/auth/tokens';
 import { getSession, requireSession, issueSession, AuthError } from '@/lib/auth/session';
-import { createCall, acknowledgeCall, completeCall } from '@/lib/calls/manager';
+import { createCall, acknowledgeCall, completeCall, cancelCall } from '@/lib/calls/manager';
 
 import {
   TournamentClosedError,
@@ -93,6 +95,7 @@ import { GET as archiveGet } from '@/app/api/tournaments/[id]/archive/route';
 import { POST as adminJoinPost } from '@/app/api/tournaments/[id]/join/admin/route';
 import { GET as joinLinksGet } from '@/app/api/tournaments/[id]/join-links/route';
 import { PUT as tablesPut } from '@/app/api/tournaments/[id]/tables/route';
+import { POST as cancelPost } from '@/app/api/calls/[callId]/cancel/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -519,6 +522,7 @@ describe('POST /api/tournaments/[id]/calls', () => {
       createdAt: '2025-01-01T10:00:00.000Z',
       acknowledgedAt: null,
       completedAt: null,
+      cancelledAt: null,
     });
 
     const req = createRequest('POST', { tableNumber: 3 });
@@ -607,6 +611,7 @@ describe('POST /api/calls/[callId]/acknowledge', () => {
       createdAt: '2025-01-01T10:00:00.000Z',
       acknowledgedAt: '2025-01-01T10:05:00.000Z',
       completedAt: null,
+      cancelledAt: null,
     });
 
     const req = createRequest('POST', { tournamentId: 'tournament-1' });
@@ -709,6 +714,7 @@ describe('POST /api/calls/[callId]/complete', () => {
       createdAt: '2025-01-01T10:00:00.000Z',
       acknowledgedAt: '2025-01-01T10:05:00.000Z',
       completedAt: '2025-01-01T10:10:00.000Z',
+      cancelledAt: null,
     });
 
     const req = createRequest('POST', { tournamentId: 'tournament-1' });
@@ -1174,6 +1180,7 @@ describe('PUT /api/tournaments/[id]/tables', () => {
         createdAt: '2025-01-01T10:00:00.000Z',
         acknowledgedAt: null,
         completedAt: null,
+        cancelledAt: null,
       },
     ]);
     vi.mocked(queryAllTournamentItems).mockResolvedValue({
@@ -1203,5 +1210,72 @@ describe('PUT /api/tournaments/[id]/tables', () => {
     const req = createRequest('PUT', { tableNumbers: [1, 2, 3], adminToken: 'admin-token' });
     const res = await tablesPut(req, routeParams);
     expect(res.status).toBe(200);
+  });
+});
+
+// ===========================================================================
+// POST /api/calls/[callId]/cancel  (player cancels their own call)
+// ===========================================================================
+
+describe('POST /api/calls/[callId]/cancel', () => {
+  const routeParams = { params: Promise.resolve({ callId: 'call-1' }) };
+
+  it('returns 400 when tournamentId is missing', async () => {
+    const req = createRequest('POST', {});
+    const res = await cancelPost(req, routeParams);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('lets a player cancel their own call (scoped to their team)', async () => {
+    const session = makeSession({ role: 'player', entityId: 'team-1' });
+    vi.mocked(getSession).mockResolvedValue(session);
+    vi.mocked(cancelCall).mockResolvedValue({
+      callId: 'call-1',
+      tournamentId: 'tournament-1',
+      teamId: 'team-1',
+      teamName: 'Cool Team',
+      tableNumber: 3,
+      status: 'cancelled',
+      refereeId: null,
+      refereeName: null,
+      createdAt: '2025-01-01T10:00:00.000Z',
+      acknowledgedAt: null,
+      completedAt: null,
+      cancelledAt: '2025-01-01T10:02:00.000Z',
+    });
+
+    const req = createRequest('POST', { tournamentId: 'tournament-1' });
+    const res = await cancelPost(req, routeParams);
+    expect(res.status).toBe(200);
+    // Player cancel must be scoped to their own team.
+    expect(cancelCall).toHaveBeenCalledWith('call-1', 'tournament-1', { expectedTeamId: 'team-1' });
+    const body = await res.json();
+    expect(body.status).toBe('cancelled');
+  });
+
+  it('returns 403 when a player tries to cancel a call that is not theirs', async () => {
+    const session = makeSession({ role: 'player', entityId: 'team-1' });
+    vi.mocked(getSession).mockResolvedValue(session);
+    vi.mocked(cancelCall).mockRejectedValue(new WrongRefereeError());
+
+    const req = createRequest('POST', { tournamentId: 'tournament-1' });
+    const res = await cancelPost(req, routeParams);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
+  });
+
+  it('returns 409 when the call is already terminal', async () => {
+    const session = makeSession({ role: 'player', entityId: 'team-1' });
+    vi.mocked(getSession).mockResolvedValue(session);
+    vi.mocked(cancelCall).mockRejectedValue(new WrongStatusError('unanswered or acknowledged', 'completed'));
+
+    const req = createRequest('POST', { tournamentId: 'tournament-1' });
+    const res = await cancelPost(req, routeParams);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    assertNoLeakedDetails(body);
   });
 });

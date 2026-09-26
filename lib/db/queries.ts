@@ -43,6 +43,7 @@ import { getDocumentClient, TABLE_NAME, GSI1_NAME } from './client';
 import { createHash } from 'crypto';
 import type { SessionPayload } from '@/lib/auth/session';
 import { assignPositions } from '@/lib/queue/position';
+import { generateToken } from '@/lib/auth/tokens';
 
 // ---------------------------------------------------------------------------
 // Typed record shapes
@@ -126,12 +127,13 @@ export type CallRecord = {
   teamId: string;
   teamName: string;
   tableNumber: number;
-  status: 'unanswered' | 'acknowledged' | 'completed';
+  status: 'unanswered' | 'acknowledged' | 'completed' | 'cancelled';
   refereeId: string | null;
   refereeName: string | null;
   createdAt: string;
   acknowledgedAt: string | null;
   completedAt: string | null;
+  cancelledAt: string | null;
 };
 
 /**
@@ -200,6 +202,7 @@ export type RecentActivityEntry = {
   createdAt: string;
   acknowledgedAt: string | null;
   completedAt: string | null;
+  cancelledAt: string | null;
 };
 
 export type ParticipantEntry = {
@@ -731,6 +734,44 @@ export async function putTeam(record: TeamRecord): Promise<void> {
   );
 }
 
+/**
+ * Create a placeholder team with a generated id and the given name (used when
+ * an admin places a call on behalf of a team that hasn't joined). Returns the
+ * new team's id and name.
+ */
+export async function createPlaceholderTeam(
+  tournamentId: string,
+  name: string,
+): Promise<{ teamId: string; name: string }> {
+  const teamId = `team_${generateToken()}`;
+  await putTeam({
+    teamId,
+    tournamentId,
+    name,
+    joinedAt: new Date().toISOString(),
+  });
+  return { teamId, name };
+}
+
+/**
+ * Create a placeholder referee with a generated id and the given name (used
+ * when an admin acknowledges/completes on behalf of a referee that hasn't
+ * joined). Returns the new referee's id and name.
+ */
+export async function createPlaceholderReferee(
+  tournamentId: string,
+  name: string,
+): Promise<{ refereeId: string; name: string }> {
+  const refereeId = `ref_${generateToken()}`;
+  await putReferee({
+    refereeId,
+    tournamentId,
+    name,
+    joinedAt: new Date().toISOString(),
+  });
+  return { refereeId, name };
+}
+
 // ---------------------------------------------------------------------------
 // Push subscriptions
 // ---------------------------------------------------------------------------
@@ -938,6 +979,46 @@ export async function updateCallComplete(
         ':completedAt': completedAt,
         ':acknowledged': 'acknowledged',
         ':refId': refereeId,
+      },
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Call — cancel
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancel a call. Valid from either 'unanswered' or 'acknowledged'. Sets
+ * status='cancelled' + cancelledAt, and REMOVES the GSI1 keys so the call
+ * drops out of both the unanswered queue and any per-referee queue. The call
+ * remains in the base table so it can appear in recent activity.
+ *
+ * The ConditionExpression guards against cancelling an already-terminal call
+ * (completed/cancelled).
+ */
+export async function updateCallCancel(
+  tournamentId: string,
+  callId: string,
+  cancelledAt: string,
+): Promise<void> {
+  const client = getDocumentClient();
+  await client.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: pk(tournamentId), SK: callSK(callId) },
+      UpdateExpression: `
+        SET #status = :cancelled,
+            cancelledAt = :cancelledAt
+        REMOVE GSI1PK, GSI1SK
+      `.trim(),
+      ConditionExpression: '#status = :unanswered OR #status = :acknowledged',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':cancelled': 'cancelled',
+        ':cancelledAt': cancelledAt,
+        ':unanswered': 'unanswered',
+        ':acknowledged': 'acknowledged',
       },
     }),
   );
@@ -1375,9 +1456,15 @@ export async function getTournamentState(
     elapsedSeconds: elapsedSeconds(c.createdAt, now),
   }));
 
-  // Build recent activity: completed and acknowledged calls, sorted by most recent event
+  // Build recent activity: completed, acknowledged, and cancelled calls, sorted
+  // by most recent event.
   const recentActivity: RecentActivityEntry[] = allItems.calls
-    .filter((c) => c.status === 'completed' || c.status === 'acknowledged')
+    .filter(
+      (c) =>
+        c.status === 'completed' ||
+        c.status === 'acknowledged' ||
+        c.status === 'cancelled',
+    )
     .map((c) => ({
       callId: c.callId,
       teamName: c.teamName,
@@ -1387,10 +1474,11 @@ export async function getTournamentState(
       createdAt: c.createdAt,
       acknowledgedAt: c.acknowledgedAt,
       completedAt: c.completedAt,
+      cancelledAt: c.cancelledAt,
     }))
     .sort((a, b) => {
-      const timeA = a.completedAt ?? a.acknowledgedAt ?? a.createdAt;
-      const timeB = b.completedAt ?? b.acknowledgedAt ?? b.createdAt;
+      const timeA = a.completedAt ?? a.cancelledAt ?? a.acknowledgedAt ?? a.createdAt;
+      const timeB = b.completedAt ?? b.cancelledAt ?? b.acknowledgedAt ?? b.createdAt;
       return timeB.localeCompare(timeA); // most recent first
     })
     .slice(0, 20);
@@ -1577,6 +1665,7 @@ function itemToCall(item: Record<string, any>): CallRecord {
     refereeName: item.refereeName ?? null,
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt ?? null,
+    cancelledAt: item.cancelledAt ?? null,
     completedAt: item.completedAt ?? null,
   };
 }

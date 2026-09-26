@@ -42,8 +42,17 @@ vi.mock('@/lib/db/queries', () => {
     clearTournamentData: vi.fn(),
     deleteTeam: vi.fn(),
     deleteReferee: vi.fn(),
+    createPlaceholderTeam: vi.fn(),
+    createPlaceholderReferee: vi.fn(),
+    queryAllTournamentItems: vi.fn(),
   };
 });
+
+vi.mock('@/lib/calls/manager', () => ({
+  createCall: vi.fn(),
+  acknowledgeCall: vi.fn(),
+  completeCallAsAdmin: vi.fn(),
+}));
 
 vi.mock('@/lib/auth/password', () => ({
   hashPassword: vi.fn(async (p: string) => `scrypt:mock:${p}`),
@@ -95,8 +104,12 @@ import {
   clearTournamentData,
   deleteTeam,
   deleteReferee,
+  createPlaceholderTeam,
+  createPlaceholderReferee,
+  queryAllTournamentItems,
   DuplicateEmailError,
 } from '@/lib/db/queries';
+import { createCall, acknowledgeCall, completeCallAsAdmin } from '@/lib/calls/manager';
 import { verifyPassword } from '@/lib/auth/password';
 import { verifyToken } from '@/lib/auth/tokens';
 import { getGlobalSession, issueGlobalSession, revokeGlobalSession } from '@/lib/auth/session';
@@ -111,6 +124,9 @@ import { PATCH as ownerPatch } from '@/app/api/tournaments/[id]/owner/route';
 import { DELETE as participantsDelete } from '@/app/api/tournaments/[id]/participants/route';
 import { DELETE as teamDelete } from '@/app/api/tournaments/[id]/teams/[teamId]/route';
 import { DELETE as refereeDelete } from '@/app/api/tournaments/[id]/referees/[refId]/route';
+import { POST as adminPlacePost } from '@/app/api/tournaments/[id]/admin/calls/route';
+import { POST as adminAckPost } from '@/app/api/tournaments/[id]/admin/calls/[callId]/acknowledge/route';
+import { POST as adminCompletePost } from '@/app/api/tournaments/[id]/admin/calls/[callId]/complete/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -659,5 +675,124 @@ describe('DELETE /api/tournaments/[id]/referees/[refId]', () => {
     const body = await res.json();
     expect(body.deleted.reopenedCalls).toBe(2);
     expect(body.deleted.deletedCompletedCalls).toBe(1);
+  });
+});
+
+// ===========================================================================
+// Admin on-behalf-of: place / acknowledge / complete
+// ===========================================================================
+
+function makeCallRecord(overrides?: Record<string, unknown>) {
+  return {
+    callId: 'call-1',
+    tournamentId: 't_1',
+    teamId: 'team-1',
+    teamName: 'Team One',
+    tableNumber: 3,
+    status: 'unanswered',
+    refereeId: null,
+    refereeName: null,
+    createdAt: '2025-01-01T10:00:00.000Z',
+    acknowledgedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    ...overrides,
+  };
+}
+
+describe('POST /api/tournaments/[id]/admin/calls (place on behalf)', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1' }) };
+
+  it('returns 401 without admin/owner auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    const res = await adminPlacePost(req('POST', { tableNumber: 3, teamId: 'team-1' }), routeParams);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 when neither teamId nor newTeamName is provided', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    const res = await adminPlacePost(req('POST', { tableNumber: 3 }), routeParams);
+    expect(res.status).toBe(400);
+  });
+
+  it('places a call for a new placeholder team', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(createPlaceholderTeam).mockResolvedValue({ teamId: 'team-new', name: 'Walk-ins' });
+    vi.mocked(createCall).mockResolvedValue(
+      makeCallRecord({ teamId: 'team-new', teamName: 'Walk-ins' }) as never,
+    );
+
+    const res = await adminPlacePost(
+      req('POST', { tableNumber: 3, newTeamName: 'Walk-ins' }),
+      routeParams,
+    );
+    expect(res.status).toBe(201);
+    expect(createPlaceholderTeam).toHaveBeenCalledWith('t_1', 'Walk-ins');
+    expect(createCall).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-new', teamName: 'Walk-ins', tableNumber: 3 }),
+    );
+  });
+
+  it('places a call for an existing team', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(queryAllTournamentItems).mockResolvedValue({
+      tournament: makeTournament(),
+      calls: [],
+      referees: [],
+      teams: [{ teamId: 'team-1', tournamentId: 't_1', name: 'Team One', joinedAt: 'x' }],
+      sessions: [],
+    });
+    vi.mocked(createCall).mockResolvedValue(makeCallRecord() as never);
+
+    const res = await adminPlacePost(req('POST', { tableNumber: 3, teamId: 'team-1' }), routeParams);
+    expect(res.status).toBe(201);
+    expect(createCall).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-1', teamName: 'Team One' }),
+    );
+  });
+});
+
+describe('POST /api/tournaments/[id]/admin/calls/[callId]/acknowledge (on behalf)', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1', callId: 'call-1' }) };
+
+  it('acknowledges as a new placeholder referee', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(createPlaceholderReferee).mockResolvedValue({ refereeId: 'ref-new', name: 'Sam' });
+    vi.mocked(acknowledgeCall).mockResolvedValue(
+      makeCallRecord({ status: 'acknowledged', refereeId: 'ref-new', refereeName: 'Sam', acknowledgedAt: 'x' }) as never,
+    );
+
+    const res = await adminAckPost(req('POST', { newRefereeName: 'Sam' }), routeParams);
+    expect(res.status).toBe(200);
+    expect(createPlaceholderReferee).toHaveBeenCalledWith('t_1', 'Sam');
+    expect(acknowledgeCall).toHaveBeenCalledWith('call-1', 'ref-new', 'Sam', 't_1');
+  });
+});
+
+describe('POST /api/tournaments/[id]/admin/calls/[callId]/complete (on behalf)', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1', callId: 'call-1' }) };
+
+  it('completes an acknowledged call on behalf of the referee', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament());
+    vi.mocked(completeCallAsAdmin).mockResolvedValue(
+      makeCallRecord({ status: 'completed', completedAt: 'x' }) as never,
+    );
+
+    const res = await adminCompletePost(req('POST', {}), routeParams);
+    expect(res.status).toBe(200);
+    expect(completeCallAsAdmin).toHaveBeenCalledWith('call-1', 't_1');
+  });
+
+  it('returns 401 without admin/owner auth', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(null);
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    const res = await adminCompletePost(req('POST', {}), routeParams);
+    expect(res.status).toBe(401);
   });
 });

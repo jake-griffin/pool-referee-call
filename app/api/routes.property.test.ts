@@ -52,6 +52,7 @@ vi.mock('@/lib/db/queries', () => {
       createdAt: '2025-01-01T10:00:00.000Z',
       acknowledgedAt: '2025-01-01T10:01:00.000Z',
       completedAt: null,
+      cancelledAt: null,
     })),
     putCall: vi.fn(),
     updateCallAcknowledge: vi.fn(),

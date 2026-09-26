@@ -10,6 +10,7 @@ import ManageTables from '@/components/admin/ManageTables';
 import ParticipantsList from '@/components/admin/ParticipantsList';
 import ClearData from '@/components/admin/ClearData';
 import CollapsibleSection from '@/components/admin/CollapsibleSection';
+import ActOnBehalf from '@/components/admin/ActOnBehalf';
 
 interface TournamentState {
   tournament: {
@@ -417,6 +418,38 @@ export default function TournamentAdminDashboard() {
               teams={state.participants.teams ?? []}
               onDelete={isAuthorized ? handleDeleteParticipant : undefined}
               hideChrome
+            />
+          </CollapsibleSection>
+        </section>
+      )}
+
+      {/* Act on behalf of participants */}
+      {!queuesMaximized && tournamentStatus === 'active' && isAuthorized && state?.participants && (
+        <section className="mb-8">
+          <CollapsibleSection title="Act on behalf" defaultOpen={false}>
+            <ActOnBehalf
+              tournamentId={tournamentId}
+              adminToken={adminToken}
+              tableNumbers={state.tournament?.tableNumbers ?? []}
+              teams={(state.participants.teams ?? []).map((t) => ({ id: t.id, name: t.name }))}
+              referees={(state.participants.referees ?? []).map((r) => ({ id: r.id, name: r.name }))}
+              activeCalls={[
+                ...(state.unansweredQueue ?? []).map((c) => ({
+                  callId: c.callId,
+                  teamName: c.teamName,
+                  tableNumber: c.tableNumber,
+                  status: 'unanswered',
+                })),
+                ...Object.values(state.refereeQueues ?? {}).flatMap((q) =>
+                  q.calls.map((c) => ({
+                    callId: c.callId,
+                    teamName: c.teamName,
+                    tableNumber: c.tableNumber,
+                    status: 'acknowledged',
+                  })),
+                ),
+              ]}
+              onChanged={() => { refetch(); }}
             />
           </CollapsibleSection>
         </section>

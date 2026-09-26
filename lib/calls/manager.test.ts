@@ -49,6 +49,7 @@ vi.mock('@/lib/db/queries', () => ({
     }
   }),
   updateCallComplete: vi.fn(async () => {}),
+  updateCallCancel: vi.fn(async () => {}),
   queryUnansweredQueue: vi.fn(async () => mockUnansweredCalls),
   queryAllTournamentItems: vi.fn(async () => mockAllItems),
   queryRefereeQueue: vi.fn(async () => []),
@@ -62,7 +63,13 @@ vi.mock('@/lib/db/queries', () => ({
 }));
 
 // Import after mocks are set up
-import { createCall, acknowledgeCall, completeCall } from '@/lib/calls/manager';
+import {
+  createCall,
+  acknowledgeCall,
+  completeCall,
+  cancelCall,
+  completeCallAsAdmin,
+} from '@/lib/calls/manager';
 import {
   TournamentClosedError,
   InvalidTableError,
@@ -103,6 +110,7 @@ function makeCall(overrides?: Partial<CallRecord>): CallRecord {
     createdAt: '2025-01-01T10:00:00.000Z',
     acknowledgedAt: null,
     completedAt: null,
+    cancelledAt: null,
     ...overrides,
   };
 }
@@ -299,5 +307,89 @@ describe('completeCall', () => {
       expect(err).toBeInstanceOf(TournamentClosedError);
       expect((err as TournamentClosedError).code).toBe('TOURNAMENT_CLOSED');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelCall
+// ---------------------------------------------------------------------------
+
+describe('cancelCall', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tokenCounter = 0;
+    mockTournament = makeActiveTournament();
+    mockCall = null;
+    mockUnansweredCalls = [];
+    mockAcknowledgeError = null;
+  });
+
+  it('cancels an unanswered call', async () => {
+    mockCall = makeCall({ status: 'unanswered' });
+    const result = await cancelCall('call-1', 'tournament-1');
+    expect(result.status).toBe('cancelled');
+    expect(result.cancelledAt).toBeTruthy();
+  });
+
+  it('cancels an acknowledged call', async () => {
+    mockCall = makeCall({ status: 'acknowledged', refereeId: 'ref-1', refereeName: 'Al' });
+    const result = await cancelCall('call-1', 'tournament-1');
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('rejects cancelling a completed call (WrongStatusError)', async () => {
+    mockCall = makeCall({ status: 'completed', completedAt: '2025-01-01T11:00:00.000Z' });
+    await expect(cancelCall('call-1', 'tournament-1')).rejects.toBeInstanceOf(WrongStatusError);
+  });
+
+  it('rejects when expectedTeamId does not match the call team (WrongRefereeError)', async () => {
+    mockCall = makeCall({ status: 'unanswered', teamId: 'team-1' });
+    await expect(
+      cancelCall('call-1', 'tournament-1', { expectedTeamId: 'team-OTHER' }),
+    ).rejects.toBeInstanceOf(WrongRefereeError);
+  });
+
+  it('allows cancel when expectedTeamId matches', async () => {
+    mockCall = makeCall({ status: 'unanswered', teamId: 'team-1' });
+    const result = await cancelCall('call-1', 'tournament-1', { expectedTeamId: 'team-1' });
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('rejects when the tournament is closed', async () => {
+    mockTournament = makeActiveTournament({ status: 'closed' });
+    mockCall = makeCall({ status: 'unanswered' });
+    await expect(cancelCall('call-1', 'tournament-1')).rejects.toBeInstanceOf(TournamentClosedError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// completeCallAsAdmin
+// ---------------------------------------------------------------------------
+
+describe('completeCallAsAdmin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tokenCounter = 0;
+    mockTournament = makeActiveTournament();
+    mockCall = null;
+  });
+
+  it('completes an acknowledged call without a referee-ownership check', async () => {
+    mockCall = makeCall({
+      status: 'acknowledged',
+      refereeId: 'ref-1',
+      refereeName: 'Al',
+      acknowledgedAt: '2025-01-01T10:05:00.000Z',
+    });
+    const result = await completeCallAsAdmin('call-1', 'tournament-1');
+    expect(result.status).toBe('completed');
+    expect(result.completedAt).toBeTruthy();
+  });
+
+  it('rejects completing a non-acknowledged call (WrongStatusError)', async () => {
+    mockCall = makeCall({ status: 'unanswered' });
+    await expect(completeCallAsAdmin('call-1', 'tournament-1')).rejects.toBeInstanceOf(
+      WrongStatusError,
+    );
   });
 });

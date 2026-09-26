@@ -95,6 +95,19 @@ export default function PlayerPage() {
         <MyCallsList
           myCalls={myCalls}
           lastUpdatedAt={lastUpdatedAt}
+          onCancel={async (callId) => {
+            try {
+              const res = await fetch(`/api/calls/${callId}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ tournamentId }),
+              });
+              if (res.ok) refetch();
+            } catch {
+              // Polling will reconcile; row clears its pending state.
+            }
+          }}
         />
       </main>
     </div>

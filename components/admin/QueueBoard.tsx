@@ -94,7 +94,9 @@ export default function QueueBoard({ unansweredQueue, refereeQueues, recentActiv
                     className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
                       call.status === 'completed'
                         ? 'bg-green-100 text-green-800'
-                        : 'bg-blue-100 text-blue-800'
+                        : call.status === 'cancelled'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-blue-100 text-blue-800'
                     }`}
                   >
                     {call.status}

@@ -16,8 +16,8 @@ import {
   putCall,
   updateCallAcknowledge,
   updateCallComplete,
+  updateCallCancel,
   queryUnansweredQueue,
-  queryRefereeQueue,
   AlreadyClaimedError as DbAlreadyClaimedError,
 } from '@/lib/db/queries';
 import type { CallRecord } from '@/lib/db/queries';
@@ -101,6 +101,7 @@ export async function createCall(input: CreateCallInput): Promise<CallRecord> {
     createdAt: now,
     acknowledgedAt: null,
     completedAt: null,
+    cancelledAt: null,
   };
 
   await putCall(record);
@@ -223,6 +224,79 @@ export async function completeCall(
     status: 'completed',
     completedAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// completeCallAsAdmin — complete on behalf of the assigned referee
+// ---------------------------------------------------------------------------
+
+/**
+ * Admin/director variant of completeCall: marks an acknowledged call complete
+ * without the referee-ownership check (the admin is acting on the referee's
+ * behalf). Still requires the call to be in 'acknowledged' status.
+ *
+ * Throws: TournamentClosedError | CallNotFoundError | WrongStatusError
+ */
+export async function completeCallAsAdmin(
+  callId: string,
+  tournamentId: string,
+): Promise<CallRecord> {
+  const tournament = await getTournamentMeta(tournamentId);
+  if (!tournament) throw new CallNotFoundError(callId);
+  if (tournament.status === 'closed') throw new TournamentClosedError();
+
+  const call = await getCall(tournamentId, callId);
+  if (!call) throw new CallNotFoundError(callId);
+  if (call.status !== 'acknowledged') {
+    throw new WrongStatusError('acknowledged', call.status);
+  }
+  if (!call.refereeId) throw new WrongStatusError('acknowledged', call.status);
+
+  const completedAt = new Date().toISOString();
+  // Complete using the call's own assigned referee (ownership check passes).
+  await updateCallComplete(tournamentId, callId, call.refereeId, completedAt);
+
+  return { ...call, status: 'completed', completedAt };
+}
+
+// ---------------------------------------------------------------------------
+// cancelCall
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancels a call. Valid from 'unanswered' or 'acknowledged'; sets status to
+ * 'cancelled'. When expectedTeamId is provided (player cancelling their own
+ * call), the call must belong to that team, otherwise WrongStatusError-style
+ * ownership is enforced via WrongRefereeError semantics using a team check.
+ *
+ * Throws: TournamentClosedError | CallNotFoundError | WrongStatusError |
+ *         CallOwnershipError (when expectedTeamId doesn't match)
+ */
+export async function cancelCall(
+  callId: string,
+  tournamentId: string,
+  opts?: { expectedTeamId?: string },
+): Promise<CallRecord> {
+  const tournament = await getTournamentMeta(tournamentId);
+  if (!tournament) throw new CallNotFoundError(callId);
+  if (tournament.status === 'closed') throw new TournamentClosedError();
+
+  const call = await getCall(tournamentId, callId);
+  if (!call) throw new CallNotFoundError(callId);
+
+  // Ownership: a player may only cancel their own team's call.
+  if (opts?.expectedTeamId && call.teamId !== opts.expectedTeamId) {
+    throw new WrongRefereeError(); // reused as a generic "not yours" 403
+  }
+
+  if (call.status !== 'unanswered' && call.status !== 'acknowledged') {
+    throw new WrongStatusError('unanswered or acknowledged', call.status);
+  }
+
+  const cancelledAt = new Date().toISOString();
+  await updateCallCancel(tournamentId, callId, cancelledAt);
+
+  return { ...call, status: 'cancelled', cancelledAt };
 }
 
 // ---------------------------------------------------------------------------
