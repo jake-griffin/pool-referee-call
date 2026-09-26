@@ -39,6 +39,7 @@ vi.mock('@/lib/db/queries', () => {
     closeTournament: vi.fn(),
     deleteGlobalSession: vi.fn(),
     assignTournamentOwner: vi.fn(),
+    clearTournamentData: vi.fn(),
   };
 });
 
@@ -89,6 +90,7 @@ import {
   getTournamentMeta,
   closeTournament,
   assignTournamentOwner,
+  clearTournamentData,
   DuplicateEmailError,
 } from '@/lib/db/queries';
 import { verifyPassword } from '@/lib/auth/password';
@@ -102,6 +104,7 @@ import { POST as logoutPost } from '@/app/api/auth/logout/route';
 import { POST as createTournamentPost, GET as listTournamentsGet } from '@/app/api/admin/tournaments/route';
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 import { PATCH as ownerPatch } from '@/app/api/tournaments/[id]/owner/route';
+import { DELETE as participantsDelete } from '@/app/api/tournaments/[id]/participants/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -520,5 +523,63 @@ describe('PATCH /api/tournaments/[id]/owner', () => {
     expect(assignTournamentOwner).toHaveBeenCalledWith('t_1', null);
     // getDirectorById should not be consulted when un-assigning.
     expect(getDirectorById).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// DELETE /api/tournaments/[id]/participants — clear participants & history
+// ===========================================================================
+
+describe('DELETE /api/tournaments/[id]/participants', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1' }) };
+
+  it('returns 404 when the tournament does not exist', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+
+    const res = await participantsDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(404);
+    expect(clearTournamentData).not.toHaveBeenCalled();
+  });
+
+  it('forbids a non-owning director', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_OTHER'));
+    vi.mocked(verifyToken).mockReturnValue(false);
+
+    const res = await participantsDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(401);
+    expect(clearTournamentData).not.toHaveBeenCalled();
+  });
+
+  it('clears data for the owning director and returns counts', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(clearTournamentData).mockResolvedValue({
+      referees: 2,
+      teams: 3,
+      calls: 5,
+      sessions: 4,
+      pushSubscriptions: 1,
+    });
+
+    const res = await participantsDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(200);
+    expect(clearTournamentData).toHaveBeenCalledWith('t_1');
+    const body = await res.json();
+    expect(body.cleared.teams).toBe(3);
+    expect(body.cleared.calls).toBe(5);
+  });
+
+  it('allows the admin to clear any tournament', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: undefined }));
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(clearTournamentData).mockResolvedValue({
+      referees: 0, teams: 0, calls: 0, sessions: 0, pushSubscriptions: 0,
+    });
+
+    const res = await participantsDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(200);
+    expect(clearTournamentData).toHaveBeenCalledWith('t_1');
   });
 });

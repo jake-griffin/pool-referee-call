@@ -8,6 +8,7 @@ import JoinLinks from '@/components/admin/JoinLinks';
 import QueueBoard from '@/components/admin/QueueBoard';
 import ManageTables from '@/components/admin/ManageTables';
 import ParticipantsList from '@/components/admin/ParticipantsList';
+import ClearData from '@/components/admin/ClearData';
 
 interface TournamentState {
   tournament: {
@@ -372,6 +373,19 @@ export default function TournamentAdminDashboard() {
           <ParticipantsList
             referees={state.participants.referees ?? []}
             teams={state.participants.teams ?? []}
+          />
+        </section>
+      )}
+
+      {/* Clear participants & history (destructive) */}
+      {tournamentStatus === 'active' && isAuthorized && state?.participants && (
+        <section className="mb-8">
+          <ClearData
+            tournamentId={tournamentId}
+            adminToken={adminToken}
+            refereeCount={state.participants.referees?.length ?? 0}
+            teamCount={state.participants.teams?.length ?? 0}
+            onCleared={() => { refetch(); }}
           />
         </section>
       )}

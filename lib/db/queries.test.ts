@@ -33,6 +33,7 @@ import {
   updateCallAcknowledge,
   getTournamentState,
   listTournaments,
+  clearTournamentData,
   AlreadyClaimedError,
 } from '@/lib/db/queries';
 import type { SessionPayload } from '@/lib/auth/session';
@@ -625,5 +626,84 @@ describe('listTournaments', () => {
     expect(result).toHaveLength(1);
     expect(result[0].tournamentId).toBe('t_1');
     expect(result[0].name).toBe('Cup');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearTournamentData — deletes participants/history, keeps META
+// ---------------------------------------------------------------------------
+
+describe('clearTournamentData', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('deletes all non-META items and never deletes the META record', async () => {
+    const mockSend = createMockClient();
+
+    // 1. Partition query returns a mix of item types.
+    mockSend.mockResolvedValueOnce({
+      Items: [
+        { PK: 'T#t_1', SK: 'META' },
+        { PK: 'T#t_1', SK: 'REF#r1' },
+        { PK: 'T#t_1', SK: 'TEAM#t1' },
+        { PK: 'T#t_1', SK: 'TEAM#t2' },
+        { PK: 'T#t_1', SK: 'CALL#c1' },
+        { PK: 'T#t_1', SK: 'SESSION#s1' },
+        { PK: 'T#t_1', SK: 'PUSH#p1' },
+      ],
+    });
+    // 2. One BatchWrite chunk (6 deletes < 25).
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await clearTournamentData('t_1');
+
+    expect(result).toEqual({
+      referees: 1,
+      teams: 2,
+      calls: 1,
+      sessions: 1,
+      pushSubscriptions: 1,
+    });
+
+    // The batch delete request must not include the META key.
+    const batchCall = mockSend.mock.calls[1][0];
+    const deletes = batchCall.input.RequestItems.TestTable as Array<{
+      DeleteRequest: { Key: { PK: string; SK: string } };
+    }>;
+    expect(deletes).toHaveLength(6);
+    const deletedSKs = deletes.map((d) => d.DeleteRequest.Key.SK);
+    expect(deletedSKs).not.toContain('META');
+    expect(deletedSKs).toContain('REF#r1');
+    expect(deletedSKs).toContain('PUSH#p1');
+  });
+
+  it('issues no batch write when there is nothing but META', async () => {
+    const mockSend = createMockClient();
+    mockSend.mockResolvedValueOnce({ Items: [{ PK: 'T#t_1', SK: 'META' }] });
+
+    const result = await clearTournamentData('t_1');
+
+    expect(result).toEqual({
+      referees: 0, teams: 0, calls: 0, sessions: 0, pushSubscriptions: 0,
+    });
+    // Only the query was sent — no batch delete.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('chunks deletes into batches of 25', async () => {
+    const mockSend = createMockClient();
+    // 30 call items → 2 batches (25 + 5).
+    const items = [{ PK: 'T#t_1', SK: 'META' }];
+    for (let i = 0; i < 30; i++) items.push({ PK: 'T#t_1', SK: `CALL#c${i}` });
+    mockSend.mockResolvedValueOnce({ Items: items });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await clearTournamentData('t_1');
+
+    expect(result.calls).toBe(30);
+    // 1 query + 2 batch writes
+    expect(mockSend).toHaveBeenCalledTimes(3);
   });
 });

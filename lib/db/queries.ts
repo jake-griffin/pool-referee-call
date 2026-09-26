@@ -34,6 +34,7 @@ import {
   TransactWriteCommand,
   ScanCommand,
   DeleteCommand,
+  BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   TransactionCanceledException,
@@ -1046,6 +1047,84 @@ export async function queryAllTournamentItems(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Clear tournament data (participants + history)
+// ---------------------------------------------------------------------------
+
+export type ClearTournamentResult = {
+  referees: number;
+  teams: number;
+  calls: number;
+  sessions: number;
+  pushSubscriptions: number;
+};
+
+/**
+ * Delete all of a tournament's participants and history — referee records,
+ * team records, calls, join sessions, and push subscriptions — while KEEPING
+ * the tournament META item (name, tables, tokens, owner). This lets an admin
+ * or the owning director wipe test data before the real event without
+ * destroying the tournament or its join links.
+ *
+ * Deletes are issued in BatchWriteItem chunks of 25 (the DynamoDB limit).
+ * Deleting the base-table item also removes its GSI1 index entry, so no
+ * separate index cleanup is needed.
+ *
+ * Returns per-type counts of deleted items.
+ */
+export async function clearTournamentData(
+  tournamentId: string,
+): Promise<ClearTournamentResult> {
+  const client = getDocumentClient();
+
+  // Query the full partition (all SKs, including PUSH#).
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': pk(tournamentId) },
+    }),
+  );
+
+  const counts: ClearTournamentResult = {
+    referees: 0,
+    teams: 0,
+    calls: 0,
+    sessions: 0,
+    pushSubscriptions: 0,
+  };
+
+  // Collect the SKs to delete — everything except the META record.
+  const keysToDelete: { PK: string; SK: string }[] = [];
+  for (const item of Items) {
+    const sk = item.SK;
+    if (typeof sk !== 'string' || sk === 'META') continue;
+
+    if (sk.startsWith('REF#')) counts.referees++;
+    else if (sk.startsWith('TEAM#')) counts.teams++;
+    else if (sk.startsWith('CALL#')) counts.calls++;
+    else if (sk.startsWith('SESSION#')) counts.sessions++;
+    else if (sk.startsWith('PUSH#')) counts.pushSubscriptions++;
+    else continue; // unknown SK type — leave it untouched
+
+    keysToDelete.push({ PK: item.PK as string, SK: sk });
+  }
+
+  // BatchWrite deletes, 25 at a time.
+  for (let i = 0; i < keysToDelete.length; i += 25) {
+    const chunk = keysToDelete.slice(i, i + 25);
+    await client.send(
+      new BatchWriteCommand({
+        RequestItems: {
+          [TABLE_NAME]: chunk.map((key) => ({ DeleteRequest: { Key: key } })),
+        },
+      }),
+    );
+  }
+
+  return counts;
 }
 
 // ---------------------------------------------------------------------------
