@@ -72,7 +72,7 @@ export default function ClearData({
         onClick={() => setOpen(true)}
         className="min-h-[44px] rounded-md border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
       >
-        Clear Test Data
+        Reset Tournament
       </button>
 
       {open && (
@@ -80,7 +80,7 @@ export default function ClearData({
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Clear participants and history"
+          aria-label="Reset tournament"
           onClick={close}
         >
           <div
@@ -88,12 +88,12 @@ export default function ClearData({
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-lg font-semibold text-gray-900">
-              Clear participants &amp; history
+              Reset Tournament
             </h3>
             <p className="mt-1 text-sm text-gray-600">
               Permanently remove all players/teams, referees, and call history for
               this tournament. The tournament and its join links are kept, so
-              everyone can re-join for the real event. Use this to clear test data.
+              everyone can re-join for the real event.
             </p>
             <p className="mt-2 text-xs text-gray-500">
               Currently: {teamCount} team{teamCount === 1 ? '' : 's'} · {refereeCount}{' '}
@@ -107,13 +107,13 @@ export default function ClearData({
             )}
 
             <p className="mt-4 text-sm font-medium text-red-700">
-              This cannot be undone. Type <span className="font-mono">CLEAR</span> to confirm.
+              This cannot be undone. Type <span className="font-mono">RESET</span> to confirm.
             </p>
             <input
               type="text"
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="CLEAR"
+              placeholder="RESET"
               autoFocus
               className="mt-2 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500"
             />
@@ -130,10 +130,10 @@ export default function ClearData({
               <button
                 type="button"
                 onClick={handleClear}
-                disabled={confirmText !== 'CLEAR' || isClearing}
+                disabled={confirmText !== 'RESET' || isClearing}
                 className="min-h-[44px] rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isClearing ? 'Clearing…' : 'Permanently clear'}
+                {isClearing ? 'Resetting…' : 'Reset Tournament'}
               </button>
             </div>
           </div>
