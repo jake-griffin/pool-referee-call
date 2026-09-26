@@ -6,9 +6,11 @@ import { QRCodeSVG } from 'qrcode.react';
 interface JoinLinksProps {
   refereeLink: string;
   playerLink: string;
+  /** Hide the internal "Join Links" heading (e.g. when a wrapper provides it). */
+  hideTitle?: boolean;
 }
 
-export default function JoinLinks({ refereeLink, playerLink }: JoinLinksProps) {
+export default function JoinLinks({ refereeLink, playerLink, hideTitle }: JoinLinksProps) {
   const [refereeCopied, setRefereeCopied] = useState(false);
   const [playerCopied, setPlayerCopied] = useState(false);
 
@@ -24,7 +26,9 @@ export default function JoinLinks({ refereeLink, playerLink }: JoinLinksProps) {
 
   return (
     <div className="space-y-6">
-      <h3 className="text-lg font-semibold text-gray-900">Join Links</h3>
+      {!hideTitle && (
+        <h3 className="text-lg font-semibold text-gray-900">Join Links</h3>
+      )}
 
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Referee Link */}

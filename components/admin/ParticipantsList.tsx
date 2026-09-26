@@ -19,6 +19,8 @@ interface ParticipantsListProps {
    * the row can clear its pending state.
    */
   onDelete?: (kind: ParticipantKind, id: string) => Promise<void>;
+  /** Hide the outer card + heading (e.g. when a collapsible wrapper provides them). */
+  hideChrome?: boolean;
 }
 
 function formatJoinedAt(iso: string): string {
@@ -83,9 +85,9 @@ function Row({
               type="button"
               aria-label={`Remove ${person.name}`}
               onClick={() => setConfirming(true)}
-              className="rounded px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50"
+              className="flex h-5 w-5 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200 hover:text-gray-800"
             >
-              Remove
+              &times;
             </button>
           )}
         </span>
@@ -133,11 +135,18 @@ function Column({
  * and the list of referees. When onDelete is provided, each row gets a Remove
  * control (with inline confirm) to delete that participant.
  */
-export default function ParticipantsList({ referees, teams, onDelete }: ParticipantsListProps) {
+export default function ParticipantsList({
+  referees,
+  teams,
+  onDelete,
+  hideChrome,
+}: ParticipantsListProps) {
   return (
-    <div className="rounded-lg border border-gray-200 p-4">
-      <h3 className="text-lg font-semibold text-gray-900">Participants</h3>
-      <p className="mt-1 text-sm text-gray-600">
+    <div className={hideChrome ? '' : 'rounded-lg border border-gray-200 p-4'}>
+      {!hideChrome && (
+        <h3 className="text-lg font-semibold text-gray-900">Participants</h3>
+      )}
+      <p className={`text-sm text-gray-600 ${hideChrome ? '' : 'mt-1'}`}>
         Players and referees who have joined this tournament. Removing a team
         deletes its calls; removing a referee reopens their in-progress calls for
         others.

@@ -9,6 +9,7 @@ import QueueBoard from '@/components/admin/QueueBoard';
 import ManageTables from '@/components/admin/ManageTables';
 import ParticipantsList from '@/components/admin/ParticipantsList';
 import ClearData from '@/components/admin/ClearData';
+import CollapsibleSection from '@/components/admin/CollapsibleSection';
 
 interface TournamentState {
   tournament: {
@@ -321,7 +322,16 @@ export default function TournamentAdminDashboard() {
         </div>
 
         {tournamentStatus === 'active' && (
-          <div>
+          <div className="flex flex-wrap items-center gap-2">
+            {isAuthorized && state?.participants && (
+              <ClearData
+                tournamentId={tournamentId}
+                adminToken={adminToken}
+                refereeCount={state.participants.referees?.length ?? 0}
+                teamCount={state.participants.teams?.length ?? 0}
+                onCleared={() => { refetch(); }}
+              />
+            )}
             {!closeConfirm ? (
               <button
                 type="button"
@@ -369,46 +379,42 @@ export default function TournamentAdminDashboard() {
       {/* Join Links */}
       {(refereeLink || playerLink) && (
         <section className="mb-8">
-          <JoinLinks
-            refereeLink={refereeLink || `${baseUrl}/join/referee/[token not available]`}
-            playerLink={playerLink || `${baseUrl}/join/player/[token not available]`}
-          />
+          <CollapsibleSection title="Join Links">
+            <JoinLinks
+              refereeLink={refereeLink || `${baseUrl}/join/referee/[token not available]`}
+              playerLink={playerLink || `${baseUrl}/join/player/[token not available]`}
+              hideTitle
+            />
+          </CollapsibleSection>
         </section>
       )}
 
       {/* Manage Tables */}
       {tournamentStatus === 'active' && isAuthorized && state?.tournament && (
         <section className="mb-8">
-          <ManageTables
-            tournamentId={tournamentId}
-            adminToken={adminToken}
-            tableNumbers={state.tournament.tableNumbers ?? []}
-            onUpdated={() => { refetch(); }}
-          />
+          <CollapsibleSection title="Manage Tables">
+            <ManageTables
+              tournamentId={tournamentId}
+              adminToken={adminToken}
+              tableNumbers={state.tournament.tableNumbers ?? []}
+              onUpdated={() => { refetch(); }}
+              hideChrome
+            />
+          </CollapsibleSection>
         </section>
       )}
 
       {/* Participants */}
       {state?.participants && (
         <section className="mb-8">
-          <ParticipantsList
-            referees={state.participants.referees ?? []}
-            teams={state.participants.teams ?? []}
-            onDelete={isAuthorized ? handleDeleteParticipant : undefined}
-          />
-        </section>
-      )}
-
-      {/* Clear participants & history (destructive) */}
-      {tournamentStatus === 'active' && isAuthorized && state?.participants && (
-        <section className="mb-8">
-          <ClearData
-            tournamentId={tournamentId}
-            adminToken={adminToken}
-            refereeCount={state.participants.referees?.length ?? 0}
-            teamCount={state.participants.teams?.length ?? 0}
-            onCleared={() => { refetch(); }}
-          />
+          <CollapsibleSection title="Participants">
+            <ParticipantsList
+              referees={state.participants.referees ?? []}
+              teams={state.participants.teams ?? []}
+              onDelete={isAuthorized ? handleDeleteParticipant : undefined}
+              hideChrome
+            />
+          </CollapsibleSection>
         </section>
       )}
 

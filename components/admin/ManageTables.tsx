@@ -11,6 +11,8 @@ interface ManageTablesProps {
   tableNumbers: number[];
   /** Called after a successful update so the dashboard can refetch state. */
   onUpdated?: () => void;
+  /** Hide the outer card + heading (e.g. when a collapsible wrapper provides them). */
+  hideChrome?: boolean;
 }
 
 /**
@@ -25,6 +27,7 @@ export default function ManageTables({
   adminToken,
   tableNumbers,
   onUpdated,
+  hideChrome,
 }: ManageTablesProps) {
   const [addInput, setAddInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -104,9 +107,11 @@ export default function ManageTables({
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 p-4">
-      <h3 className="text-lg font-semibold text-gray-900">Manage Tables</h3>
-      <p className="mt-1 text-sm text-gray-600">
+    <div className={hideChrome ? '' : 'rounded-lg border border-gray-200 p-4'}>
+      {!hideChrome && (
+        <h3 className="text-lg font-semibold text-gray-900">Manage Tables</h3>
+      )}
+      <p className={`text-sm text-gray-600 ${hideChrome ? '' : 'mt-1'}`}>
         Add or remove tables while the tournament is in progress. Removing a table
         stops new calls for it; existing calls stay active.
       </p>
