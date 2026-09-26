@@ -40,6 +40,8 @@ vi.mock('@/lib/db/queries', () => {
     deleteGlobalSession: vi.fn(),
     assignTournamentOwner: vi.fn(),
     clearTournamentData: vi.fn(),
+    deleteTeam: vi.fn(),
+    deleteReferee: vi.fn(),
   };
 });
 
@@ -91,6 +93,8 @@ import {
   closeTournament,
   assignTournamentOwner,
   clearTournamentData,
+  deleteTeam,
+  deleteReferee,
   DuplicateEmailError,
 } from '@/lib/db/queries';
 import { verifyPassword } from '@/lib/auth/password';
@@ -105,6 +109,8 @@ import { POST as createTournamentPost, GET as listTournamentsGet } from '@/app/a
 import { POST as closePost } from '@/app/api/tournaments/[id]/close/route';
 import { PATCH as ownerPatch } from '@/app/api/tournaments/[id]/owner/route';
 import { DELETE as participantsDelete } from '@/app/api/tournaments/[id]/participants/route';
+import { DELETE as teamDelete } from '@/app/api/tournaments/[id]/teams/[teamId]/route';
+import { DELETE as refereeDelete } from '@/app/api/tournaments/[id]/referees/[refId]/route';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -581,5 +587,77 @@ describe('DELETE /api/tournaments/[id]/participants', () => {
     const res = await participantsDelete(req('DELETE'), routeParams);
     expect(res.status).toBe(200);
     expect(clearTournamentData).toHaveBeenCalledWith('t_1');
+  });
+});
+
+// ===========================================================================
+// DELETE /api/tournaments/[id]/teams/[teamId]
+// ===========================================================================
+
+describe('DELETE /api/tournaments/[id]/teams/[teamId]', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1', teamId: 'team-9' }) };
+
+  it('returns 404 when the tournament does not exist', async () => {
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(getTournamentMeta).mockResolvedValue(null);
+    const res = await teamDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(404);
+    expect(deleteTeam).not.toHaveBeenCalled();
+  });
+
+  it('forbids a non-owning director', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_OTHER'));
+    vi.mocked(verifyToken).mockReturnValue(false);
+    const res = await teamDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(401);
+    expect(deleteTeam).not.toHaveBeenCalled();
+  });
+
+  it('deletes the team for the owning director and returns counts', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_1'));
+    vi.mocked(deleteTeam).mockResolvedValue({ calls: 3, sessions: 1 });
+
+    const res = await teamDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(200);
+    expect(deleteTeam).toHaveBeenCalledWith('t_1', 'team-9');
+    const body = await res.json();
+    expect(body.deleted.calls).toBe(3);
+  });
+});
+
+// ===========================================================================
+// DELETE /api/tournaments/[id]/referees/[refId]
+// ===========================================================================
+
+describe('DELETE /api/tournaments/[id]/referees/[refId]', () => {
+  const routeParams = { params: Promise.resolve({ id: 't_1', refId: 'ref-9' }) };
+
+  it('forbids a non-owning director', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: 'd_1' }));
+    vi.mocked(getGlobalSession).mockResolvedValue(directorGSession('d_OTHER'));
+    vi.mocked(verifyToken).mockReturnValue(false);
+    const res = await refereeDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(401);
+    expect(deleteReferee).not.toHaveBeenCalled();
+  });
+
+  it('deletes the referee and returns reopened/deleted counts (admin)', async () => {
+    vi.mocked(getTournamentMeta).mockResolvedValue(makeTournament({ ownerId: undefined }));
+    vi.mocked(getGlobalSession).mockResolvedValue(adminGSession());
+    vi.mocked(deleteReferee).mockResolvedValue({
+      reopenedCalls: 2,
+      deletedCompletedCalls: 1,
+      sessions: 1,
+      pushSubscriptions: 1,
+    });
+
+    const res = await refereeDelete(req('DELETE'), routeParams);
+    expect(res.status).toBe(200);
+    expect(deleteReferee).toHaveBeenCalledWith('t_1', 'ref-9');
+    const body = await res.json();
+    expect(body.deleted.reopenedCalls).toBe(2);
+    expect(body.deleted.deletedCompletedCalls).toBe(1);
   });
 });

@@ -34,6 +34,8 @@ import {
   getTournamentState,
   listTournaments,
   clearTournamentData,
+  deleteTeam,
+  deleteReferee,
   AlreadyClaimedError,
 } from '@/lib/db/queries';
 import type { SessionPayload } from '@/lib/auth/session';
@@ -705,5 +707,113 @@ describe('clearTournamentData', () => {
     expect(result.calls).toBe(30);
     // 1 query + 2 batch writes
     expect(mockSend).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteTeam
+// ---------------------------------------------------------------------------
+
+describe('deleteTeam', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('deletes the team, all its calls, and its session; leaves others', async () => {
+    const mockSend = createMockClient();
+    mockSend.mockResolvedValueOnce({
+      Items: [
+        { PK: 'T#t_1', SK: 'META' },
+        { PK: 'T#t_1', SK: 'TEAM#team-A' },
+        { PK: 'T#t_1', SK: 'TEAM#team-B' },
+        { PK: 'T#t_1', SK: 'CALL#c1', teamId: 'team-A', status: 'unanswered' },
+        { PK: 'T#t_1', SK: 'CALL#c2', teamId: 'team-A', status: 'completed' },
+        { PK: 'T#t_1', SK: 'CALL#c3', teamId: 'team-B', status: 'unanswered' },
+        { PK: 'T#t_1', SK: 'SESSION#s1', entityId: 'team-A' },
+        { PK: 'T#t_1', SK: 'SESSION#s2', entityId: 'team-B' },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({}); // batch delete
+
+    const result = await deleteTeam('t_1', 'team-A');
+    expect(result).toEqual({ calls: 2, sessions: 1 });
+
+    const batch = mockSend.mock.calls[1][0];
+    const deletedSKs = (batch.input.RequestItems.TestTable as Array<{
+      DeleteRequest: { Key: { SK: string } };
+    }>).map((d) => d.DeleteRequest.Key.SK);
+    expect(deletedSKs).toContain('TEAM#team-A');
+    expect(deletedSKs).toContain('CALL#c1');
+    expect(deletedSKs).toContain('CALL#c2');
+    expect(deletedSKs).toContain('SESSION#s1');
+    // team-B's items must be untouched
+    expect(deletedSKs).not.toContain('TEAM#team-B');
+    expect(deletedSKs).not.toContain('CALL#c3');
+    expect(deletedSKs).not.toContain('SESSION#s2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteReferee
+// ---------------------------------------------------------------------------
+
+describe('deleteReferee', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('deletes referee + session + push + completed calls, and reopens acknowledged calls', async () => {
+    const mockSend = createMockClient();
+    mockSend.mockResolvedValueOnce({
+      Items: [
+        { PK: 'T#t_1', SK: 'META' },
+        { PK: 'T#t_1', SK: 'REF#ref-A' },
+        { PK: 'T#t_1', SK: 'SESSION#s1', entityId: 'ref-A' },
+        { PK: 'T#t_1', SK: 'PUSH#p1', refereeId: 'ref-A' },
+        {
+          PK: 'T#t_1', SK: 'CALL#c-ack', callId: 'c-ack', refereeId: 'ref-A', status: 'acknowledged',
+          teamId: 'team-1', teamName: 'T', tableNumber: 3,
+          createdAt: '2025-01-01T10:00:00.000Z', acknowledgedAt: '2025-01-01T10:05:00.000Z',
+          completedAt: null, refereeName: 'Al',
+        },
+        {
+          PK: 'T#t_1', SK: 'CALL#c-done', callId: 'c-done', refereeId: 'ref-A', status: 'completed',
+          teamId: 'team-1', teamName: 'T', tableNumber: 4,
+          createdAt: '2025-01-01T09:00:00.000Z', acknowledgedAt: '2025-01-01T09:05:00.000Z',
+          completedAt: '2025-01-01T09:10:00.000Z', refereeName: 'Al',
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({}); // batch delete
+    mockSend.mockResolvedValueOnce({}); // update (reopen) for c-ack
+
+    const result = await deleteReferee('t_1', 'ref-A');
+    expect(result).toEqual({
+      reopenedCalls: 1,
+      deletedCompletedCalls: 1,
+      sessions: 1,
+      pushSubscriptions: 1,
+    });
+
+    // Batch delete removed the ref record, session, push, and the completed call
+    // — but NOT the acknowledged call (that gets reopened via update).
+    const batch = mockSend.mock.calls[1][0];
+    const deletedSKs = (batch.input.RequestItems.TestTable as Array<{
+      DeleteRequest: { Key: { SK: string } };
+    }>).map((d) => d.DeleteRequest.Key.SK);
+    expect(deletedSKs).toContain('REF#ref-A');
+    expect(deletedSKs).toContain('SESSION#s1');
+    expect(deletedSKs).toContain('PUSH#p1');
+    expect(deletedSKs).toContain('CALL#c-done');
+    expect(deletedSKs).not.toContain('CALL#c-ack');
+
+    // The reopen update resets status to unanswered and re-indexes GSI1.
+    const update = mockSend.mock.calls[2][0];
+    expect(update.input.Key.SK).toBe('CALL#c-ack');
+    const values = update.input.ExpressionAttributeValues;
+    expect(values[':unanswered']).toBe('unanswered');
+    expect(values[':unansweredPK']).toBe('T#t_1#UNANSWERED');
+    expect(values[':createdAt']).toBe('2025-01-01T10:00:00.000Z');
+    expect(update.input.UpdateExpression).toContain('REMOVE refereeId, refereeName, acknowledgedAt');
   });
 });

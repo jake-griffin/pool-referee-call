@@ -181,6 +181,27 @@ export default function TournamentAdminDashboard() {
     }
   }
 
+  async function handleDeleteParticipant(kind: 'team' | 'referee', entityId: string) {
+    const path =
+      kind === 'team'
+        ? `/api/tournaments/${tournamentId}/teams/${entityId}`
+        : `/api/tournaments/${tournamentId}/referees/${entityId}`;
+    try {
+      const response = await fetch(path, {
+        method: 'DELETE',
+        headers: {
+          ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
+        },
+        credentials: 'include',
+      });
+      if (response.ok) {
+        refetch();
+      }
+    } catch {
+      // Swallow — the row clears its pending state and polling will reconcile.
+    }
+  }
+
   async function handleClose() {
     if (!isAuthorized) return;
     setIsClosing(true);
@@ -373,6 +394,7 @@ export default function TournamentAdminDashboard() {
           <ParticipantsList
             referees={state.participants.referees ?? []}
             teams={state.participants.teams ?? []}
+            onDelete={isAuthorized ? handleDeleteParticipant : undefined}
           />
         </section>
       )}

@@ -1112,9 +1112,161 @@ export async function clearTournamentData(
     keysToDelete.push({ PK: item.PK as string, SK: sk });
   }
 
-  // BatchWrite deletes, 25 at a time.
-  for (let i = 0; i < keysToDelete.length; i += 25) {
-    const chunk = keysToDelete.slice(i, i + 25);
+  await batchDeleteKeys(keysToDelete);
+  return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Delete a specific team or referee
+// ---------------------------------------------------------------------------
+
+export type DeleteTeamResult = { calls: number; sessions: number };
+
+/**
+ * Delete a single team and everything tied to it: the TEAM# record, ALL of the
+ * team's calls (unanswered, acknowledged, and completed — deleting the base
+ * item also removes any GSI1 queue entry), and the team's join session(s).
+ * The tournament and other participants are untouched.
+ */
+export async function deleteTeam(
+  tournamentId: string,
+  teamId: string,
+): Promise<DeleteTeamResult> {
+  const client = getDocumentClient();
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': pk(tournamentId) },
+    }),
+  );
+
+  const keysToDelete: { PK: string; SK: string }[] = [];
+  const result: DeleteTeamResult = { calls: 0, sessions: 0 };
+
+  // Always remove the team record itself.
+  keysToDelete.push({ PK: pk(tournamentId), SK: teamSK(teamId) });
+
+  for (const item of Items) {
+    const sk = item.SK;
+    if (typeof sk !== 'string') continue;
+
+    if (sk.startsWith('CALL#') && item.teamId === teamId) {
+      keysToDelete.push({ PK: item.PK as string, SK: sk });
+      result.calls++;
+    } else if (sk.startsWith('SESSION#') && item.entityId === teamId) {
+      keysToDelete.push({ PK: item.PK as string, SK: sk });
+      result.sessions++;
+    }
+  }
+
+  await batchDeleteKeys(keysToDelete);
+  return result;
+}
+
+export type DeleteRefereeResult = {
+  reopenedCalls: number;
+  deletedCompletedCalls: number;
+  sessions: number;
+  pushSubscriptions: number;
+};
+
+/**
+ * Delete a single referee and their sessions and push subscriptions, and remove
+ * the referee's COMPLETED calls. Any of the referee's INCOMPLETE (acknowledged)
+ * calls are reopened — reset to "unanswered" and returned to the shared
+ * unanswered queue — so another referee can pick them up.
+ *
+ * The reopen is the inverse of acknowledge: it clears refereeId/refereeName/
+ * acknowledgedAt and moves the GSI1 key from the per-referee partition back to
+ * the unanswered partition (keyed by the call's original createdAt to preserve
+ * FIFO order).
+ */
+export async function deleteReferee(
+  tournamentId: string,
+  refereeId: string,
+): Promise<DeleteRefereeResult> {
+  const client = getDocumentClient();
+  const { Items = [] } = await client.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': pk(tournamentId) },
+    }),
+  );
+
+  const result: DeleteRefereeResult = {
+    reopenedCalls: 0,
+    deletedCompletedCalls: 0,
+    sessions: 0,
+    pushSubscriptions: 0,
+  };
+
+  const keysToDelete: { PK: string; SK: string }[] = [];
+  const callsToReopen: CallRecord[] = [];
+
+  // Remove the referee record itself.
+  keysToDelete.push({ PK: pk(tournamentId), SK: refSK(refereeId) });
+
+  for (const item of Items) {
+    const sk = item.SK;
+    if (typeof sk !== 'string') continue;
+
+    if (sk.startsWith('CALL#') && item.refereeId === refereeId) {
+      const call = itemToCall(item);
+      if (call.status === 'acknowledged') {
+        callsToReopen.push(call);
+      } else if (call.status === 'completed') {
+        keysToDelete.push({ PK: item.PK as string, SK: sk });
+        result.deletedCompletedCalls++;
+      }
+      // (An 'unanswered' call can't have a refereeId, so nothing else to do.)
+    } else if (sk.startsWith('SESSION#') && item.entityId === refereeId) {
+      keysToDelete.push({ PK: item.PK as string, SK: sk });
+      result.sessions++;
+    } else if (sk.startsWith('PUSH#') && item.refereeId === refereeId) {
+      keysToDelete.push({ PK: item.PK as string, SK: sk });
+      result.pushSubscriptions++;
+    }
+  }
+
+  await batchDeleteKeys(keysToDelete);
+
+  // Reopen acknowledged calls: reset to unanswered and re-index onto the
+  // unanswered GSI1 partition (original createdAt keeps FIFO position).
+  for (const call of callsToReopen) {
+    await client.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { PK: pk(tournamentId), SK: callSK(call.callId) },
+        UpdateExpression: `
+          SET #status = :unanswered,
+              GSI1PK = :unansweredPK,
+              GSI1SK = :createdAt
+          REMOVE refereeId, refereeName, acknowledgedAt
+        `.trim(),
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':unanswered': 'unanswered',
+          ':unansweredPK': unansweredGSI1PK(tournamentId),
+          ':createdAt': call.createdAt,
+        },
+      }),
+    );
+    result.reopenedCalls++;
+  }
+
+  return result;
+}
+
+/** Delete a list of PK/SK keys in BatchWriteItem chunks of 25. */
+async function batchDeleteKeys(
+  keys: { PK: string; SK: string }[],
+): Promise<void> {
+  if (keys.length === 0) return;
+  const client = getDocumentClient();
+  for (let i = 0; i < keys.length; i += 25) {
+    const chunk = keys.slice(i, i + 25);
     await client.send(
       new BatchWriteCommand({
         RequestItems: {
@@ -1123,8 +1275,6 @@ export async function clearTournamentData(
       }),
     );
   }
-
-  return counts;
 }
 
 // ---------------------------------------------------------------------------
