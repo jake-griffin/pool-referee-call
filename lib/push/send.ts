@@ -61,6 +61,12 @@ export async function sendToSubscriptions(
   }
 
   const body = JSON.stringify(payload);
+  // "Referee needed" alerts are time-sensitive:
+  //  - urgency 'high' asks the push service to deliver promptly rather than
+  //    batching it (which battery-saving modes otherwise do), and
+  //  - a 5-minute TTL means a call that can't be delivered in time is dropped
+  //    instead of arriving stale and no longer relevant.
+  const options = { urgency: 'high' as const, TTL: 300 };
   let sent = 0;
   let pruned = 0;
   let failed = 0;
@@ -74,6 +80,7 @@ export async function sendToSubscriptions(
             keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
           },
           body,
+          options,
         );
         sent++;
       } catch (err) {
