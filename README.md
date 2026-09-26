@@ -67,8 +67,18 @@ Push standard (Push API + service worker + VAPID) — no native app required.
    (the public key again) plus `VAPID_SUBJECT` in your environment / Amplify
    console. If these are unset, the app runs normally but the "Enable
    notifications" control is hidden and no pushes are sent.
-3. Deploy. Referees will see an "Enable call notifications" button on their
+3. **Amplify only:** the build reads a curated allowlist of env vars into
+   `.env.production` (see `amplify.yml`). The VAPID variables are included in
+   that allowlist — if you add more env vars later, remember that
+   `NEXT_PUBLIC_*` values must be present at **build time** to be inlined into
+   the client bundle, so they must appear in the `amplify.yml` grep.
+4. Deploy. Referees will see an "Enable call notifications" button on their
    tournament page; tapping it requests permission and subscribes their device.
+
+Generate a **separate** keypair for production (don't reuse local dev keys), and
+treat it as long-lived: changing the keypair invalidates every existing referee
+subscription and forces everyone to re-subscribe. `VAPID_PRIVATE_KEY` is a
+secret — keep it in the Amplify console, never in the repo.
 
 Notifications are sent to **all** referees who have enabled them in a tournament
 whenever a new call is created. Sending is best-effort and never blocks or fails
